@@ -25,3 +25,7 @@ A10 non è elencato per card_info/password_info/persons/device_log; queste capac
 ## Per validare in futuro
 
 Usare un dispositivo di test e ottenere consenso per i comandi specifici. Acquisire risposte sanitizzate e firmware esatto; confrontare supporto e semantica relay, identità remota, paginazione, reason per elemento e timestamp. Solo dopo implementare un adapter versionato con rilettura e idempotenza, mantenendolo dietro flag disattivato e conferma esplicita. Non riutilizzare il payload ambiguo `reboot` dello ZIP.
+
+## Elenco utenti CSV (i60K 2.12.55)
+
+Su questo firmware `card_info` e `password_info` rispondono con liste vuote e codice diverso da 200; carte, PIN e nomi sono nell’export CSV di `GET /api/userlist` (osservato dall’utente, non nel manuale per questo modello). Se le letture JSON sono vuote, **Importa** legge il CSV: ignora righe disattivate o senza credenziali e il PIN segnaposto `*`; carta e PIN della stessa riga vanno alla stessa persona; righe senza nome ricevono un nome provvisorio. Stato (Period/Disable), numero di usi e relay del dispositivo **non** sono rappresentati nelle credenziali locali: le righe con limite sono segnalate nel riepilogo. Il CSV contiene carte e PIN in chiaro: transita nella LAN e viene cifrato nel database.

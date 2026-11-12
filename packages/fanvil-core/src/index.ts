@@ -202,7 +202,23 @@ const codeOf = (v: unknown) =>
   /^[\w-]{1,8}$/.test(String(v))
     ? String(v)
     : undefined;
-export function metadata(body: unknown) {
+export function metadata(body: unknown): Record<string, any> {
+  if (typeof body === "string") {
+    const lines = body
+      .replace(/^\uFEFF/, "")
+      .split(/\r?\n/)
+      .filter(Boolean);
+    return {
+      format: "csv",
+      fields: [],
+      columns: (lines[0] ?? "")
+        .split(",")
+        .slice(0, 30)
+        .map((c) => safeKey(c.trim().replace(/\s+/g, "_"))),
+      rows: Math.max(lines.length - 1, 0),
+      verified: false,
+    };
+  }
   return {
     format:
       body === null ? "null" : Array.isArray(body) ? "array" : typeof body,
@@ -361,7 +377,13 @@ export class FanvilHttpClient {
                 const raw = Buffer.concat(chunks).toString();
                 resolve({
                   status: res.statusCode ?? 200,
-                  body: raw ? JSON.parse(raw) : null,
+                  // /api/userlist answers CSV text, every other read answers JSON.
+                  body:
+                    operation === "userlistRead"
+                      ? raw
+                      : raw
+                        ? JSON.parse(raw)
+                        : null,
                 });
               } catch {
                 reject(

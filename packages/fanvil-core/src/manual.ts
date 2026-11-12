@@ -157,3 +157,59 @@ export function documentedRelayOpen(relay: "1" | "2") {
     dooropen: { relay, action: "on", mode: "once" },
   };
 }
+
+// GET /api/userlist (observed on i60K 2.12.55, not in the manual for this model): CSV export.
+function csvRows(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [],
+    cell = "",
+    quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (c === '"') quoted = false;
+      else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell);
+      cell = "";
+      if (row.some((v) => v !== "")) rows.push(row);
+      row = [];
+    } else cell += c;
+  }
+  row.push(cell);
+  if (row.some((v) => v !== "")) rows.push(row);
+  return rows;
+}
+const userlistColumns = ["Name", "Status", "Times", "Card Number", "Password"];
+export function parseUserlist(body: unknown) {
+  const [header, ...rows] = csvRows(
+    typeof body === "string" ? body.replace(/^\uFEFF/, "") : "",
+  );
+  const missing = userlistColumns.filter((c) => !header?.includes(c));
+  if (!header || missing.length)
+    throw Object.assign(Error("Intestazione CSV non riconosciuta"), {
+      issues: missing.map((c) => ({
+        path: ["colonna"],
+        code: "colonna mancante",
+        expected: c,
+      })),
+    });
+  const col = (r: string[], name: string) =>
+    (r[header.indexOf(name)] ?? "").trim();
+  return rows.map((r) => ({
+    name: col(r, "Name"),
+    status: col(r, "Status"),
+    times: Number(col(r, "Times")) || 0,
+    card: col(r, "Card Number"),
+    // "*" is a placeholder for the remote-control entry, not a PIN.
+    pin: col(r, "Password") === "*" ? "" : col(r, "Password"),
+  }));
+}

@@ -152,14 +152,18 @@ describe("Import reale in staging", () => {
   it("lista vuota con codice applicativo diverso da 200 = nessun elemento, non errore", async () => {
     const s = new Store(":memory:");
     const id = realDevice(s, "i60K");
-    const batch = await stage(s, secrets, id, "actor", async (op) => ({
-      status: 200,
-      body: {
-        type: {},
-        code: "400",
-        [op === "cardsRead" ? "card" : "password"]: [],
-      },
-    }));
+    const batch = await stage(s, secrets, id, "actor", async (op) =>
+      op === "userlistRead"
+        ? { status: 200, body: "Name,Status,Times,Card Number,Password\n" }
+        : {
+            status: 200,
+            body: {
+              type: {},
+              code: "400",
+              [op === "cardsRead" ? "card" : "password"]: [],
+            },
+          },
+    );
     expect(batch.items).toHaveLength(0);
     expect(batch.summary).toMatchObject({
       cards: 0,
@@ -242,5 +246,70 @@ describe("Eventi reali", () => {
       approved: false,
     });
     expect(await collectEvents(s, id, "actor")).toEqual({ count: 6 });
+  });
+});
+describe("Import da userlist CSV (sintetico)", () => {
+  const csv =
+    "﻿Name,Status,Times,Relay,Period,Owner,Card Type,Card Number,Password Type,Number,Call ForWard,Password,Location,Floors,Picture,Feature,Source,Issuing Time\r\n" +
+    "Anna Demo,Enable,0,1,,,Normal,0000000001,Local,,,,,,,,0,2026/01/01 10:00:00\r\n" +
+    "Marco Demo,Enable,0,1,,,Normal,0000000002,Local,,,4242,,,,,0,2026/01/01 10:00:00\r\n" +
+    '"Solo, PIN",Enable,5,1,,,Normal,,Local,,,5151,,,,,0,2026/01/01 10:00:00\r\n' +
+    ",Enable,0,1,,,Normal,0000000003,Local,,,,,,,,0,2026/01/01 10:00:00\r\n" +
+    "Remoto,Enable,0,1,,,Normal,,Remote,,,*,,,,,0,2026/01/01 10:00:00\r\n" +
+    "Spento,Disable,0,1,,,Normal,0000000004,Local,,,,,,,,0,2026/01/01 10:00:00\r\n" +
+    ",Enable,0,1,,,Normal,,Local & Remote,,,,,,,,100,2026/01/01 10:00:00\r\n";
+  const emptyJson: DeviceReader = async (op) =>
+    op === "userlistRead"
+      ? { status: 200, body: csv }
+      : {
+          status: 200,
+          body: {
+            code: "400",
+            [op === "cardsRead" ? "card" : "password"]: [],
+          },
+        };
+  it("legge carte e PIN dal CSV, ignora spenti/vuoti/placeholder e unisce carta+PIN sulla stessa persona", async () => {
+    const s = new Store(":memory:");
+    const id = realDevice(s, "i60K");
+    const batch = await stage(s, secrets, id, "actor", emptyJson);
+    expect(batch.summary).toMatchObject({
+      cards: 3,
+      pins: 2,
+      userlist: { rows: 7, disabled: 1, empty: 2, limited: 1 },
+    });
+    const text = JSON.stringify(batch);
+    for (const secret of ["0000000001", "4242", "5151"])
+      expect(text).not.toContain(secret);
+    expect(
+      batch.items.filter((i: any) => i.name.startsWith("Senza nome")),
+    ).toHaveLength(1);
+    reconcile(s, batch.id, {}, "actor");
+    expect(
+      s.all("SELECT name FROM people ORDER BY name").map((p) => p.name),
+    ).toHaveLength(4);
+    expect(s.all("SELECT * FROM credentials")).toHaveLength(5);
+    const marco = s.get("SELECT id FROM people WHERE name='Marco Demo'")!;
+    expect(
+      s.all(
+        "SELECT kind FROM credentials WHERE person_id=? ORDER BY kind",
+        marco.id,
+      ),
+    ).toHaveLength(2);
+    const again = await stage(s, secrets, id, "actor", emptyJson);
+    expect(again.items.every((i: any) => i.existingPersonId)).toBe(true);
+  });
+  it("intestazione sconosciuta: errore con i nomi attesi, nessun import", async () => {
+    const s = new Store(":memory:");
+    const id = realDevice(s, "i60K");
+    await expect(
+      stage(s, secrets, id, "actor", async (op) =>
+        op === "userlistRead"
+          ? { status: 200, body: "A,B\n1,2" }
+          : { status: 200, body: { code: "400", card: [], password: [] } },
+      ),
+    ).rejects.toMatchObject({
+      code: "FANVIL_RESPONSE_SCHEMA",
+      message: expect.stringContaining("Card Number"),
+    });
   });
 });
