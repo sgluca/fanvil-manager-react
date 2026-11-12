@@ -157,7 +157,10 @@ describe("Import reale in staging", () => {
         status: 200,
         body: { code: "200", card: [{ name: "x" }] },
       })),
-    ).rejects.toMatchObject({ code: "FANVIL_RESPONSE_SCHEMA" });
+    ).rejects.toMatchObject({
+      code: "FANVIL_RESPONSE_SCHEMA",
+      message: expect.stringContaining("card_info"),
+    });
     expect(s.all("SELECT * FROM staging_batches")).toHaveLength(0);
   });
   it("propaga l’errore del dispositivo senza dati parziali", async () => {
