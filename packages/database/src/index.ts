@@ -1,9 +1,9 @@
-import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
-export type Row=Record<string,any>;
-export const migration=`
+import { DatabaseSync, backup as sqliteBackup } from "node:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+export type Row = Record<string, any>;
+export const migration = `
 CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,name TEXT NOT NULL,model TEXT NOT NULL,host TEXT NOT NULL,port INTEGER NOT NULL,protocol TEXT NOT NULL,mode TEXT NOT NULL,approved INTEGER NOT NULL DEFAULT 0,secret TEXT,firmware TEXT,last_contact TEXT,revision INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS device_capabilities(device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,key TEXT NOT NULL,state TEXT NOT NULL,reason TEXT NOT NULL,source TEXT NOT NULL,PRIMARY KEY(device_id,key));
@@ -33,14 +33,64 @@ CREATE INDEX IF NOT EXISTS sync_device_status ON sync_jobs(device_id,status);
 CREATE INDEX IF NOT EXISTS audit_time ON audit_logs(created_at);
 `;
 export class Store {
- db:DatabaseSync;
- constructor(public path:string){if(path!==':memory:')mkdirSync(dirname(path),{recursive:true,mode:0o700});this.db=new DatabaseSync(path);this.db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;');this.transaction(()=>{this.db.exec(migration);this.run('INSERT OR IGNORE INTO migrations VALUES(1,?)',now());});}
- run(sql:string,...args:any[]){return this.db.prepare(sql).run(...args);}
- all(sql:string,...args:any[]):Row[]{return this.db.prepare(sql).all(...args);}
- get(sql:string,...args:any[]):Row|undefined{return this.db.prepare(sql).get(...args);}
- transaction<T>(fn:()=>T):T{this.db.exec('BEGIN IMMEDIATE');try{const v=fn();this.db.exec('COMMIT');return v;}catch(e){this.db.exec('ROLLBACK');throw e;}}
- audit(actor:string|null,action:string,entity:string|null=null,metadata:Row={}){this.run('INSERT INTO audit_logs VALUES(?,?,?,?,?,?)',randomUUID(),actor,action,entity,JSON.stringify(metadata),now());}
- async backup(path:string){mkdirSync(dirname(path),{recursive:true,mode:0o700});await sqliteBackup(this.db,path);return path;}
- close(){this.db.close();}
+  db: DatabaseSync;
+  constructor(public path: string) {
+    if (path !== ":memory:")
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    this.db = new DatabaseSync(path);
+    this.db.exec(
+      "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;",
+    );
+    this.transaction(() => {
+      this.db.exec(migration);
+      this.run("INSERT OR IGNORE INTO migrations VALUES(1,?)", now());
+    });
+  }
+  run(sql: string, ...args: any[]) {
+    return this.db.prepare(sql).run(...args);
+  }
+  all(sql: string, ...args: any[]): Row[] {
+    return this.db.prepare(sql).all(...args);
+  }
+  get(sql: string, ...args: any[]): Row | undefined {
+    return this.db.prepare(sql).get(...args);
+  }
+  transaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const v = fn();
+      this.db.exec("COMMIT");
+      return v;
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+  audit(
+    actor: string | null,
+    action: string,
+    entity: string | null = null,
+    metadata: Row = {},
+  ) {
+    this.run(
+      "INSERT INTO audit_logs VALUES(?,?,?,?,?,?)",
+      randomUUID(),
+      actor,
+      action,
+      entity,
+      JSON.stringify(metadata),
+      now(),
+    );
+  }
+  async backup(path: string) {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    await sqliteBackup(this.db, path);
+    return path;
+  }
+  close() {
+    this.db.close();
+  }
 }
-export function now(){return new Date().toISOString();}
+export function now() {
+  return new Date().toISOString();
+}

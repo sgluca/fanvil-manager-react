@@ -2,21 +2,21 @@
 
 Fonte: collezione OpenCollection 1.0.0, 17 YAML (13 richieste, configurazione e 3 ambienti). Autenticazione HTTP Basic ereditata dalla collezione; gli ambienti risolvono baseUrl con prefisso /api. Nessuna richiesta eseguita sui dispositivi.
 
-| File sorgente | Metodo e URL | Auth | Operazione | Risposta documentata | Stato modello/firmware |
-|---|---|---|---|---|---|
-| Import User List.yml | POST `/api/userlist` | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Get Person List Summary.yml | GET `/api/persons` | Basic ereditata | Lettura documentata, non verificata | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Get-Delete Face Recognition Log.yml | POST `/api/access_log` | Basic ereditata | Lettura documentata, non verificata | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Card Management.yml | POST `/api/card_info` | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Export User List.yml | GET `/api/userlist` | Basic ereditata | Lettura documentata, non verificata | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Control Device.yml | POST `/api/device` | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Person Management.yml | POST `/api/persons` | Basic ereditata | Lettura documentata, non verificata | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Device Info & Status.yml | POST `/api/device_info` | Basic ereditata | Lettura documentata, non verificata | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Configuration Setting.yml | POST `/api/config` | Basic ereditata | Lettura documentata, non verificata | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Password Management.yml | POST `/api/password_info` | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Set Time.yml | POST `/api/time` | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Open Door Log.yml | POST `/api/device_log` | Basic ereditata | Lettura documentata, non verificata | 200, body vuoto | unknown su tutti i modelli/firmware |
-| Get Face Recognition Log Details.yml | GET `/api/access_log` | Basic ereditata | Lettura documentata, non verificata | 200, body vuoto | unknown su tutti i modelli/firmware |
+| File sorgente                        | Metodo e URL              | Auth            | Operazione                            | Risposta documentata | Stato modello/firmware              |
+| ------------------------------------ | ------------------------- | --------------- | ------------------------------------- | -------------------- | ----------------------------------- |
+| Import User List.yml                 | POST `/api/userlist`      | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Get Person List Summary.yml          | GET `/api/persons`        | Basic ereditata | Lettura documentata, non verificata   | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Get-Delete Face Recognition Log.yml  | POST `/api/access_log`    | Basic ereditata | Lettura documentata, non verificata   | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Card Management.yml                  | POST `/api/card_info`     | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Export User List.yml                 | GET `/api/userlist`       | Basic ereditata | Lettura documentata, non verificata   | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Control Device.yml                   | POST `/api/device`        | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Person Management.yml                | POST `/api/persons`       | Basic ereditata | Lettura documentata, non verificata   | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Device Info & Status.yml             | POST `/api/device_info`   | Basic ereditata | Lettura documentata, non verificata   | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Configuration Setting.yml            | POST `/api/config`        | Basic ereditata | Lettura documentata, non verificata   | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Password Management.yml              | POST `/api/password_info` | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Set Time.yml                         | POST `/api/time`          | Basic ereditata | Scrittura / potenzialmente pericolosa | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Open Door Log.yml                    | POST `/api/device_log`    | Basic ereditata | Lettura documentata, non verificata   | 200, body vuoto      | unknown su tutti i modelli/firmware |
+| Get Face Recognition Log Details.yml | GET `/api/access_log`     | Basic ereditata | Lettura documentata, non verificata   | 200, body vuoto      | unknown su tutti i modelli/firmware |
 
 ## Incertezze e blocchi
 
@@ -133,9 +133,7 @@ Campi e struttura del body sanitizzato:
     "cmd": "get",
     "condition": "index"
   },
-  "persons": [
-    {}
-  ]
+  "persons": [{}]
 }
 ```
 
@@ -187,9 +185,7 @@ Campi e struttura del body sanitizzato:
   "type": {
     "cmd": "add"
   },
-  "password": [
-    {}
-  ]
+  "password": [{}]
 }
 ```
 
@@ -238,17 +234,17 @@ null
 
 Il PDF fornito successivamente è una seconda fonte: chiarisce gli schemi, ma non verifica l'hardware. Le incertezze dello ZIP sopra sono conservate come confronto tra fonti; i chiarimenti seguenti prevalgono nei parser documentati. Il PDF originale non viene pubblicato.
 
-| Argomento | Evidenza manuale | Decisione implementativa |
-|---|---|---|
-| Autenticazione | §2.1 p.9 parla di Digest; §1.3 mostra Authorization Basic; ZIP Basic | Basic configurato dalla collezione; Digest non implementato, nessun fallback automatico. Documentare il conflitto e diagnosticare 401 senza esporre header. |
-| Device info | §3.2.1 pp.10–11: item `device_info`, `info` e `code: "200"` | Corretto `device info` dello ZIP; parser tipizzato, firmware acquisibile. Modello può essere generico: non sovrascrivere automaticamente quello registrato. |
-| Relay | §3.2.3.3 p.14: cmd `relayCtrl`, relay `1`/`2`/`all`, action `on`/`off`, mode `once`/`long` | Serializzatore puro per `on/once`; nessun trasporto di scrittura abilitato. `reboot` dello ZIP escluso. |
-| A10 | §3.1 p.10 e §3.2.3.4 p.14 | Device info documentato; card/password/persons/device_log esclusi dall'elenco A10. Relay CGI distinto, non implementato. |
-| RFID | §3.7 pp.30–35: get per indice, `card` oggetto nella richiesta e array nella risposta | Aggiunta lettura fissa 1–100 e parser; status e relay hanno tipi incoerenti tra esempi, nessuna conversione automatica dei permessi. |
-| PIN | §3.8 pp.36–41: type, name, password, refid, status, relay; get per indice | Parser e serializzatore puro aggiunti; refid vuoto non è un'identità stabile. Import reale resta bloccato. |
-| Persone | §3.9 pp.42–59: GET è solo riepilogo; POST get indice usa `persons` oggetto | Aggiunta lettura dettagli documentata; incongruenze `person`/`persons`, mai usare nome come chiave. |
-| Firmware | §3.9.2 p.50: comando persona aggregato da 2.12.47.x per i60/i60K/i61/i62/i63/i64 | Non dedurre supporto su firmware ignoto; scritture aggregate non implementate. |
-| Eventi | §3.10 pp.60–62: data array, openTime epoch secondi, openResult 0/1 | Parser selettivo che scarta extra/extraJson, foto e identità non riconciliate; relay 0 ambiguo diventa sconosciuto. |
-| User list | §3.1 include A17/i66/i67/i68, §3.12 p.73 indica i66/i67/i68 | Escluso dall'inspector per i modelli del progetto; export non è un elenco JSON persone garantito. |
+| Argomento      | Evidenza manuale                                                                           | Decisione implementativa                                                                                                                                    |
+| -------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Autenticazione | §2.1 p.9 parla di Digest; §1.3 mostra Authorization Basic; ZIP Basic                       | Basic configurato dalla collezione; Digest non implementato, nessun fallback automatico. Documentare il conflitto e diagnosticare 401 senza esporre header. |
+| Device info    | §3.2.1 pp.10–11: item `device_info`, `info` e `code: "200"`                                | Corretto `device info` dello ZIP; parser tipizzato, firmware acquisibile. Modello può essere generico: non sovrascrivere automaticamente quello registrato. |
+| Relay          | §3.2.3.3 p.14: cmd `relayCtrl`, relay `1`/`2`/`all`, action `on`/`off`, mode `once`/`long` | Serializzatore puro per `on/once`; nessun trasporto di scrittura abilitato. `reboot` dello ZIP escluso.                                                     |
+| A10            | §3.1 p.10 e §3.2.3.4 p.14                                                                  | Device info documentato; card/password/persons/device_log esclusi dall'elenco A10. Relay CGI distinto, non implementato.                                    |
+| RFID           | §3.7 pp.30–35: get per indice, `card` oggetto nella richiesta e array nella risposta       | Aggiunta lettura fissa 1–100 e parser; status e relay hanno tipi incoerenti tra esempi, nessuna conversione automatica dei permessi.                        |
+| PIN            | §3.8 pp.36–41: type, name, password, refid, status, relay; get per indice                  | Parser e serializzatore puro aggiunti; refid vuoto non è un'identità stabile. Import reale resta bloccato.                                                  |
+| Persone        | §3.9 pp.42–59: GET è solo riepilogo; POST get indice usa `persons` oggetto                 | Aggiunta lettura dettagli documentata; incongruenze `person`/`persons`, mai usare nome come chiave.                                                         |
+| Firmware       | §3.9.2 p.50: comando persona aggregato da 2.12.47.x per i60/i60K/i61/i62/i63/i64           | Non dedurre supporto su firmware ignoto; scritture aggregate non implementate.                                                                              |
+| Eventi         | §3.10 pp.60–62: data array, openTime epoch secondi, openResult 0/1                         | Parser selettivo che scarta extra/extraJson, foto e identità non riconciliate; relay 0 ambiguo diventa sconosciuto.                                         |
+| User list      | §3.1 include A17/i66/i67/i68, §3.12 p.73 indica i66/i67/i68                                | Escluso dall'inspector per i modelli del progetto; export non è un elenco JSON persone garantito.                                                           |
 
 I parser sono verificati con fixture sintetiche conformi al manuale. Nessuna capability hardware è marcata `verified`. Le letture reali restano disattivate per default; import e sync reali richiedono ulteriore validazione del firmware. Finestre temporali documentate in §3.5 ma non abilitate.
