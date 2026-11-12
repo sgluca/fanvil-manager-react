@@ -246,6 +246,7 @@ describe("Forma diagnostica delle risposte", () => {
       length: 1,
       itemFields: { name: "string", cardNumber: "number", relay: "array" },
     });
+    expect(m.deviceCode).toBe("200");
     expect(JSON.stringify(m)).not.toContain("Mario");
     expect(JSON.stringify(m)).not.toContain("1234567890");
   });

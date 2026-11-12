@@ -69,6 +69,7 @@ const totalOf = (v: unknown) =>
     ? Number(v)
     : null;
 export function parseLogsPage(body: unknown) {
+  if (emptyList(body, "data")) return { items: [], total: 0 };
   const r = logResponse.parse(body);
   return { items: parseLogs(body), total: totalOf(r.total) };
 }
@@ -115,10 +116,18 @@ export type ParsedCredential = {
   remoteId: string | null;
   readability: string;
 };
+// i60K 2.12.55 answers an empty list with a non-"200" application code: an empty array is
+// "nothing configured", whatever the code. Non-empty lists still require code 200.
+function emptyList(body: unknown, key: string) {
+  const list = (body as any)?.[key];
+  return Array.isArray(list) && list.length === 0;
+}
 export function parseCredentialsPage(
   body: unknown,
   kind: "rfid" | "pin",
 ): { items: ParsedCredential[]; total: number | null } {
+  if (emptyList(body, kind === "rfid" ? "card" : "password"))
+    return { items: [], total: 0 };
   const r =
     kind === "rfid" ? cardsResponse.parse(body) : pinsResponse.parse(body);
   return { items: parseCredentials(body, kind), total: totalOf(r.total) };

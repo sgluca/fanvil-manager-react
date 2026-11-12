@@ -196,6 +196,12 @@ function shapeOf(v: unknown) {
     };
   return { type: kindOf(v) };
 }
+// Protocol status codes are short tokens, not personal data: keep them to explain device answers.
+const codeOf = (v: unknown) =>
+  (typeof v === "string" || typeof v === "number") &&
+  /^[\w-]{1,8}$/.test(String(v))
+    ? String(v)
+    : undefined;
 export function metadata(body: unknown) {
   return {
     format:
@@ -213,6 +219,9 @@ export function metadata(body: unknown) {
               .map(([k, v]) => [safeKey(k), shapeOf(v)]),
           )
         : {},
+    ...(body && typeof body === "object" && codeOf((body as any).code)
+      ? { deviceCode: codeOf((body as any).code) }
+      : {}),
     verified: false,
   };
 }

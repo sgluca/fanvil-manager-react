@@ -149,6 +149,30 @@ describe("Import reale in staging", () => {
       s.get("SELECT id FROM people")!.id,
     );
   });
+  it("lista vuota con codice applicativo diverso da 200 = nessun elemento, non errore", async () => {
+    const s = new Store(":memory:");
+    const id = realDevice(s, "i60K");
+    const batch = await stage(s, secrets, id, "actor", async (op) => ({
+      status: 200,
+      body: {
+        type: {},
+        code: "400",
+        [op === "cardsRead" ? "card" : "password"]: [],
+      },
+    }));
+    expect(batch.items).toHaveLength(0);
+    expect(batch.summary).toMatchObject({
+      cards: 0,
+      pins: 0,
+      cardsComplete: true,
+    });
+    await expect(
+      stage(s, secrets, id, "actor", async () => ({
+        status: 200,
+        body: { code: "400", card: [{ name: "x", cardNumber: "1" }] },
+      })),
+    ).rejects.toMatchObject({ code: "FANVIL_RESPONSE_SCHEMA" });
+  });
   it("non importa nulla se lo schema non è quello del manuale", async () => {
     const s = new Store(":memory:");
     const id = realDevice(s);
