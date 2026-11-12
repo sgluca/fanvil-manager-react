@@ -189,8 +189,8 @@ function App() {
     setError("");
     setBusy(true);
     try {
-      await fn();
-      setNotice(message);
+      const result = (await fn()) as { notice?: string } | undefined;
+      setNotice(result?.notice ?? message);
       await reload();
       return true;
     } catch (e) {
@@ -1060,11 +1060,36 @@ function App() {
                           onClick={() =>
                             confirm(
                               "Importa in staging",
-                              "Legge il mock nella demo. Import reale bloccato finché non validato sul firmware.",
-                              () =>
-                                api("/devices/" + d.id + "/import", "POST", {
-                                  confirm: true,
-                                }),
+                              d.mode === "demo"
+                                ? "Legge il mock della demo e prepara lo staging."
+                                : "Legge da zero tutte le carte e i PIN dal dispositivo (solo lettura) e li prepara in staging per la riconciliazione. Nulla viene scritto sul citofono.",
+                              async () => {
+                                const r = await api(
+                                  "/devices/" + d.id + "/import",
+                                  "POST",
+                                  { confirm: true },
+                                );
+                                const x = r.summary;
+                                if (!x) return undefined;
+                                const partial =
+                                  !x.cardsComplete || !x.pinsComplete;
+                                return {
+                                  notice:
+                                    "Staging pronto: " +
+                                    x.cards +
+                                    " carte, " +
+                                    x.pins +
+                                    " PIN" +
+                                    (x.skipped
+                                      ? ", " +
+                                        x.skipped +
+                                        " senza identificativo ignorati"
+                                      : "") +
+                                    (partial
+                                      ? ". ATTENZIONE: lettura forse incompleta (limite pagine o risposta ripetuta dal firmware)"
+                                      : ""),
+                                };
+                              },
                             )
                           }
                         >
@@ -1661,7 +1686,7 @@ function App() {
                     <button
                       onClick={() =>
                         openForm(
-                          "Acquisisci eventi demo",
+                          "Acquisisci eventi",
                           [
                             {
                               key: "deviceId",
@@ -1671,13 +1696,25 @@ function App() {
                             },
                           ],
                           async (v) => {
-                            await api(
+                            const c = await api(
                               "/devices/" + v.deviceId + "/events/collect",
                               "POST",
                               { confirm: true },
                             );
                             const r = await api("/events?" + eventParams());
                             setData((d) => ({ ...d, events: r }));
+                            return c.read === undefined
+                              ? undefined
+                              : {
+                                  notice:
+                                    c.read +
+                                    " eventi letti, " +
+                                    c.added +
+                                    " nuovi" +
+                                    (c.complete
+                                      ? ""
+                                      : ". ATTENZIONE: lettura forse incompleta"),
+                                };
                           },
                         )
                       }

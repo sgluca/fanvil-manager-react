@@ -4,7 +4,30 @@ import {
   Secrets,
   masked,
   assertRealWriteBlocked,
+  readAllPages,
+  type ReadOperation,
 } from "../../../packages/fanvil-core/src/index.ts";
+import {
+  parseCredentialsPage,
+  parseLogsPage,
+} from "../../../packages/fanvil-core/src/manual.ts";
+import { FanvilReadError } from "../../../packages/fanvil-core/src/errors.ts";
+export type DeviceReader = (
+  operation: ReadOperation,
+  page: number,
+) => Promise<{ status: number; body: unknown }>;
+// A parser failure means the firmware answered something other than the documented schema:
+// surface it as a diagnosable read error instead of importing partial data.
+function parsed<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch {
+    throw new FanvilReadError(
+      "FANVIL_RESPONSE_SCHEMA",
+      "Risposta non conforme allo schema del manuale 0.8.7: nessun dato importato",
+    );
+  }
+}
 import {
   capabilitiesForModel,
   deviceDto,
@@ -284,15 +307,65 @@ export function apply(s: Store, secrets: Secrets, id: string, actor: string) {
   }
   return jobView(s, id);
 }
-export function stage(
+export async function stage(
   s: Store,
   secrets: Secrets,
   deviceId: string,
   actor: string,
-) {
+  reader?: DeviceReader,
+): Promise<Row> {
   const device = required(s, "devices", deviceId);
-  if (device.mode !== "demo")
-    fail("Import reale disabilitato: parser risposta non verificato", 409);
+  let items: {
+    remoteId: string;
+    name: string;
+    kind: string;
+    value: string | null;
+  }[];
+  let summary: Row | undefined;
+  if (device.mode === "demo") {
+    items = remote(s, secrets, deviceId) as any;
+  } else {
+    if (!reader) fail("Lettura reale non disponibile", 409);
+    const cards = await readAllPages((page) =>
+      reader("cardsRead", page).then((r) =>
+        parsed(() => parseCredentialsPage(r.body, "rfid")),
+      ),
+    );
+    const pins = await readAllPages((page) =>
+      reader("pinsRead", page).then((r) =>
+        parsed(() => parseCredentialsPage(r.body, "pin")),
+      ),
+    );
+    const seen = new Set<string>();
+    let skipped = 0;
+    items = [];
+    for (const c of [...cards.items, ...pins.items]) {
+      // A PIN without refid has no stable remote identity: derive one from the value only.
+      // Card numbers are never exposed: the remote id is a keyed fingerprint, stable per key.
+      const remoteId =
+        c.kind === "rfid" && c.value
+          ? "card:" + secrets.fingerprint("rfid", c.value).slice(0, 32)
+          : (c.remoteId ??
+            (c.value
+              ? "pin-value:" + secrets.fingerprint("pin", c.value).slice(0, 32)
+              : null));
+      if (!remoteId || seen.has(remoteId)) {
+        skipped++;
+        continue;
+      }
+      seen.add(remoteId);
+      items.push({ remoteId, name: c.name, kind: c.kind, value: c.value });
+    }
+    summary = {
+      cards: cards.items.length,
+      pins: pins.items.length,
+      skipped,
+      cardsComplete: cards.complete,
+      pinsComplete: pins.complete,
+      cardsStoppedBy: cards.stoppedBy,
+      pinsStoppedBy: pins.stoppedBy,
+    };
+  }
   const batchId = randomUUID();
   s.transaction(() => {
     s.run(
@@ -302,7 +375,7 @@ export function stage(
       "pending",
       now(),
     );
-    for (const item of remote(s, secrets, deviceId))
+    for (const item of items)
       s.run(
         "INSERT INTO staging_items VALUES(?,?,?,?,?,?,?,?,?)",
         randomUUID(),
@@ -312,12 +385,26 @@ export function stage(
         item.kind,
         item.value ? secrets.encrypt(item.value) : null,
         item.value ? secrets.fingerprint(item.kind, item.value) : null,
-        masked(item.kind, item.value),
+        masked(item.kind, item.value ?? undefined),
         item.value ? "readable" : "unrecoverable",
       );
-    s.audit(actor, "import.stage.demo", batchId, { deviceId });
+    s.audit(
+      actor,
+      device.mode === "demo" ? "import.stage.demo" : "import.stage.real",
+      batchId,
+      { deviceId, ...summary },
+    );
+    if (device.mode !== "demo")
+      s.run(
+        "INSERT INTO diagnostics VALUES(?,?,?,?,?)",
+        randomUUID(),
+        deviceId,
+        "import",
+        JSON.stringify({ source: "real", success: true, ...summary }),
+        now(),
+      );
   });
-  return batchView(s, batchId);
+  return { ...batchView(s, batchId), ...(summary ? { summary } : {}) };
 }
 export function batchView(s: Store, id: string) {
   const b = required(s, "staging_batches", id);
@@ -353,6 +440,7 @@ export function reconcile(
 ) {
   const b = required(s, "staging_batches", batchId);
   if (b.status === "applied") return batchView(s, batchId);
+  const deviceMode = required(s, "devices", b.device_id).mode;
   s.transaction(() => {
     for (const i of s.all(
       "SELECT * FROM staging_items WHERE batch_id=?",
@@ -386,7 +474,7 @@ export function reconcile(
           "INSERT INTO people VALUES(?,?,?,?,?,?)",
           personId,
           i.name,
-          "Import demo",
+          deviceMode === "demo" ? "Import demo" : "Import dal dispositivo",
           1,
           1,
           now(),
@@ -430,7 +518,10 @@ export function reconcile(
         credentialId ?? null,
         i.remote_id,
         "observed",
-        JSON.stringify({ source: "mock", readability: i.readability }),
+        JSON.stringify({
+          source: deviceMode === "demo" ? "mock" : "real",
+          readability: i.readability,
+        }),
       );
     }
     s.run("UPDATE staging_batches SET status='applied' WHERE id=?", batchId);
@@ -438,20 +529,18 @@ export function reconcile(
   });
   return batchView(s, batchId);
 }
-export function collectEvents(s: Store, deviceId: string, actor: string) {
-  const d = required(s, "devices", deviceId);
-  if (d.mode !== "demo") fail("Parser eventi reale non verificato", 409);
-  const relay = s.get(
-    "SELECT id FROM relays WHERE device_id=? ORDER BY number",
+function collectDemoEvents(s: Store, deviceId: string, actor: string) {
+  const relays = s.all(
+    "SELECT id,number FROM relays WHERE device_id=? ORDER BY number",
     deviceId,
-  )!;
+  );
   for (let i = 0; i < 6; i++)
     s.run(
       "INSERT OR IGNORE INTO access_events VALUES(?,?,?,?,?,?,?,?,?)",
       randomUUID(),
       deviceId,
       null,
-      relay.id,
+      relays[0].id,
       "demo-event-" + i,
       new Date(Date.UTC(2026, 10, 12, 8, i * 5)).toISOString(),
       i === 4 ? "denied" : "granted",
@@ -464,6 +553,69 @@ export function collectEvents(s: Store, deviceId: string, actor: string) {
       "SELECT COUNT(*) n FROM access_events WHERE device_id=?",
       deviceId,
     )!.n,
+  };
+}
+export async function collectEvents(
+  s: Store,
+  deviceId: string,
+  actor: string,
+  reader?: DeviceReader,
+) {
+  const d = required(s, "devices", deviceId);
+  if (d.mode === "demo") return collectDemoEvents(s, deviceId, actor);
+  if (!reader) fail("Lettura reale non disponibile", 409);
+  const relays = s.all(
+    "SELECT id,number FROM relays WHERE device_id=? ORDER BY number",
+    deviceId,
+  );
+  const read = await readAllPages((page) =>
+    reader("eventsRead", page).then((r) => parsed(() => parseLogsPage(r.body))),
+  );
+  let added = 0;
+  s.transaction(() => {
+    for (const e of read.items) {
+      // Relay 0/unknown stays unattributed; identity is never inferred from the log.
+      const relay = relays.find((r) => r.number === e.relayNumber);
+      added += Number(
+        s.run(
+          "INSERT OR IGNORE INTO access_events VALUES(?,?,?,?,?,?,?,?,?)",
+          randomUUID(),
+          deviceId,
+          null,
+          relay?.id ?? null,
+          e.remoteId,
+          e.occurredAt,
+          e.outcome,
+          "real",
+          "real:" + deviceId + ":" + e.remoteId,
+        ).changes,
+      );
+    }
+    const summary = {
+      read: read.items.length,
+      added,
+      pages: read.pages,
+      complete: read.complete,
+      stoppedBy: read.stoppedBy,
+    };
+    s.audit(actor, "events.collect.real", deviceId, summary);
+    s.run(
+      "INSERT INTO diagnostics VALUES(?,?,?,?,?)",
+      randomUUID(),
+      deviceId,
+      "eventsCollect",
+      JSON.stringify({ source: "real", success: true, ...summary }),
+      now(),
+    );
+  });
+  return {
+    count: s.get(
+      "SELECT COUNT(*) n FROM access_events WHERE device_id=?",
+      deviceId,
+    )!.n,
+    read: read.items.length,
+    added,
+    complete: read.complete,
   };
 }
 export function seedDemo(s: Store, secrets: Secrets) {

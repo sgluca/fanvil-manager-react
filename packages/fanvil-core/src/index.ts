@@ -122,6 +122,28 @@ export const readRequests = {
   },
 } as const;
 export type ReadOperation = keyof typeof readRequests;
+export const PAGE_SIZE = 100;
+const indexed = {
+  cardsRead: "card",
+  pinsRead: "password",
+  personsDetail: "persons",
+  eventsRead: "deviceLog",
+} as const;
+export function isPagedOperation(
+  operation: ReadOperation,
+): operation is keyof typeof indexed {
+  return Object.hasOwn(indexed, operation);
+}
+// Same documented request, with the index window replaced. Other fields are untouched.
+export function readSpec(operation: ReadOperation, page = 1) {
+  const spec: { method: string; path: string; body?: any } = structuredClone(
+    readRequests[operation],
+  );
+  if (isPagedOperation(operation) && spec.body)
+    spec.body[indexed[operation]].index =
+      (page - 1) * PAGE_SIZE + 1 + "-" + page * PAGE_SIZE;
+  return spec;
+}
 export type Target = {
   host: string;
   port: number;
@@ -171,6 +193,7 @@ export class FanvilHttpClient {
   async read(
     target: Target,
     operation: ReadOperation,
+    page = 1,
   ): Promise<{ status: number; body: unknown }> {
     if (!this.options.enabled)
       throw new FanvilReadError(
@@ -236,8 +259,9 @@ export class FanvilHttpClient {
           "Indirizzo fuori dalla LAN autorizzata: verificare FANVIL_ALLOWED_CIDRS; sono esclusi IP pubblici, loopback e link-local",
         );
       const address = addresses[0];
-      const spec = readRequests[operation];
-      const body = "body" in spec ? JSON.stringify(spec.body) : undefined;
+      const spec = readSpec(operation, page);
+      const body =
+        spec.body === undefined ? undefined : JSON.stringify(spec.body);
       return await new Promise((resolve, reject) => {
         const req = (target.protocol === "https" ? https : http).request(
           {
@@ -347,6 +371,57 @@ export class FanvilHttpClient {
       this.active--;
     }
   }
+}
+export const MAX_PAGES = 50;
+export type PagedRead<T> = {
+  items: T[];
+  pages: number;
+  total: number | null;
+  complete: boolean;
+  stoppedBy: "short-page" | "total" | "repeat" | "page-limit";
+};
+// Sequential, bounded read of every index window. Stops when the device returns a short page,
+// the declared total is reached, a page repeats (firmware ignoring the index) or the page cap hits.
+// `complete` is false when the result may not be the whole list.
+export async function readAllPages<T>(
+  fetchPage: (page: number) => Promise<{ items: T[]; total: number | null }>,
+  maxPages = MAX_PAGES,
+): Promise<PagedRead<T>> {
+  const items: T[] = [];
+  let total: number | null = null,
+    previousFirst: string | null = null;
+  for (let page = 1; page <= maxPages; page++) {
+    const r = await fetchPage(page);
+    total = r.total ?? total;
+    const first = r.items.length ? JSON.stringify(r.items[0]) : null;
+    if (page > 1 && first !== null && first === previousFirst)
+      return {
+        items,
+        pages: page,
+        total,
+        complete: false,
+        stoppedBy: "repeat",
+      };
+    previousFirst = first;
+    items.push(...r.items);
+    if (total !== null && items.length >= total)
+      return { items, pages: page, total, complete: true, stoppedBy: "total" };
+    if (r.items.length < PAGE_SIZE)
+      return {
+        items,
+        pages: page,
+        total,
+        complete: total === null || items.length >= total,
+        stoppedBy: "short-page",
+      };
+  }
+  return {
+    items,
+    pages: maxPages,
+    total,
+    complete: false,
+    stoppedBy: "page-limit",
+  };
 }
 export function assertRealWriteBlocked(): never {
   throw Object.assign(
