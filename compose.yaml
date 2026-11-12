@@ -9,9 +9,9 @@ services:
       NODE_ENV: production
       PORT: 3000
       DATABASE_PATH: /app/data/fanvil.sqlite
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Configurare ENCRYPTION_KEY}
-      SESSION_SECRET: ${SESSION_SECRET:?Configurare SESSION_SECRET}
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Configurare PUBLIC_ORIGIN con HTTPS}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       TZ: Europe/Rome
       DEMO_MODE: ${DEMO_MODE:-false}
       FANVIL_READ_ENABLED: ${FANVIL_READ_ENABLED:-false}

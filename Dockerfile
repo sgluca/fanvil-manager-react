@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 FROM node:24-bookworm-slim AS build
+ARG NODE_ENV=production
 WORKDIR /app
 COPY . .
 RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
-    npm ci --strict-ssl=true && \
+    npm ci --include=dev --strict-ssl=true && \
     npm run build && \
     npm prune --omit=dev && \
     mkdir -p /runtime/apps/web /runtime/data && \

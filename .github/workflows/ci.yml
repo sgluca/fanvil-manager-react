@@ -20,7 +20,8 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
-      - run: docker build -t fanvil-manager:local .
+      - run: docker compose --env-file /dev/null config --quiet
+      - run: docker build --build-arg NODE_ENV=production -t fanvil-manager:local .
       - run: npm run test:docker
       - uses: actions/upload-artifact@v4
         if: failure()

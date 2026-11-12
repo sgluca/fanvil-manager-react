@@ -33,3 +33,11 @@ Verifiche eseguite il 12 novembre 2026 nell’ambiente di sviluppo isolato, Node
 I parser sono verificati contro fixture sintetiche conformi al manuale, non contro risposte dei firmware installati. Import, acquisizione eventi e scritture reali restano bloccati. La pipeline GitHub è predisposta; i risultati sopra sono quelli locali. Nessun deployment su Coolify è stato eseguito.
 
 Durante i controlli il primo Dockerfile ha esaurito lo spazio del runner VFS: è stato sostituito con una build a meno layer e la build è stata ripetuta con successo. I test del trasporto hanno inoltre individuato un limite dimensione non correttamente propagato; il difetto è corretto e coperto da regressione.
+
+## Correzione build Coolify con NODE_ENV=production
+
+Riprodotto il fallimento del Dockerfile precedente passando `NODE_ENV=production` come ARG di build: npm ometteva le devDependencies e `npm run build` terminava con `vite: not found`, exit 127.
+
+Il Dockerfile ora usa `npm ci --include=dev --strict-ssl=true`, poi rimuove le dipendenze di sviluppo prima di creare il runtime. La build con ARG di produzione è stata completata con successo. La CI ripete esplicitamente questa configurazione.
+
+Compose è analizzabile anche senza le tre variabili sensibili/obbligatorie nell'ambiente di build. Tre test aggiuntivi verificano che l'applicazione rifiuti comunque chiavi, segreto sessione e origine HTTPS mancanti o non validi al runtime. Su Coolify le variabili applicative vanno configurate come Runtime only, senza Available at Buildtime.
