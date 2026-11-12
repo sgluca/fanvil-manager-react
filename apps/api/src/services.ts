@@ -16,23 +16,47 @@ export type DeviceReader = (
   operation: ReadOperation,
   page: number,
 ) => Promise<{ status: number; body: unknown }>;
-// A parser failure means the firmware answered something other than the documented schema:
-// surface it as a diagnosable read error instead of importing partial data.
-function parsed<T>(fn: () => T): T {
-  try {
-    return fn();
-  } catch {
-    throw new FanvilReadError(
-      "FANVIL_RESPONSE_SCHEMA",
-      "Risposta non conforme allo schema del manuale 0.8.7: nessun dato importato",
-    );
-  }
-}
 import {
   capabilitiesForModel,
   deviceDto,
   credentialDto,
 } from "../../../packages/shared/src/index.ts";
+// A parser failure means the firmware answered something other than the documented schema.
+// The message names the endpoint, top-level keys and failing field paths only (never values).
+function parsed<T>(label: string, body: unknown, fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    const keys =
+      body && typeof body === "object"
+        ? Object.keys(body)
+            .slice(0, 12)
+            .map((k) => (/^[\w.]{1,40}$/.test(k) ? k : "[campo]"))
+            .join(", ")
+        : typeof body;
+    const issues = Array.isArray((error as any)?.issues)
+      ? (error as any).issues
+          .slice(0, 4)
+          .map(
+            (i: any) =>
+              (i.path.join(".") || "(radice)") +
+              ": " +
+              String(i.code) +
+              (i.expected ? " atteso " + i.expected : ""),
+          )
+          .join("; ")
+      : "errore di lettura";
+    throw new FanvilReadError(
+      "FANVIL_RESPONSE_SCHEMA",
+      "Risposta " +
+        label +
+        " non conforme al manuale 0.8.7, nessun dato importato. Campi ricevuti: " +
+        (keys || "nessuno") +
+        ". Problemi: " +
+        issues,
+    );
+  }
+}
 export function fail(message: string, statusCode = 400): never {
   throw Object.assign(Error(message), { statusCode });
 }
@@ -328,12 +352,14 @@ export async function stage(
     if (!reader) fail("Lettura reale non disponibile", 409);
     const cards = await readAllPages((page) =>
       reader("cardsRead", page).then((r) =>
-        parsed(() => parseCredentialsPage(r.body, "rfid")),
+        parsed("card_info", r.body, () => parseCredentialsPage(r.body, "rfid")),
       ),
     );
     const pins = await readAllPages((page) =>
       reader("pinsRead", page).then((r) =>
-        parsed(() => parseCredentialsPage(r.body, "pin")),
+        parsed("password_info", r.body, () =>
+          parseCredentialsPage(r.body, "pin"),
+        ),
       ),
     );
     const seen = new Set<string>();
@@ -569,7 +595,9 @@ export async function collectEvents(
     deviceId,
   );
   const read = await readAllPages((page) =>
-    reader("eventsRead", page).then((r) => parsed(() => parseLogsPage(r.body))),
+    reader("eventsRead", page).then((r) =>
+      parsed("device_log", r.body, () => parseLogsPage(r.body)),
+    ),
   );
   let added = 0;
   s.transaction(() => {

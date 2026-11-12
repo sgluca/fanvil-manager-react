@@ -10,6 +10,7 @@ import {
   normalizeDeviceInfo,
   assertRealWriteBlocked,
   FanvilHttpClient,
+  metadata,
 } from "../packages/fanvil-core/src/index.ts";
 import {
   parseLogs,
@@ -230,5 +231,22 @@ describe("Sicurezza e contratto manuale", () => {
         relay: "2",
       }).password[0].type,
     ).toBe("local");
+  });
+});
+
+describe("Forma diagnostica delle risposte", () => {
+  it("riporta nomi e tipi dei campi senza alcun valore", () => {
+    const m = metadata({
+      code: "200",
+      total: "1",
+      card: [{ name: "Mario Rossi", cardNumber: 1234567890, relay: ["1"] }],
+    });
+    expect(m.shape.card).toEqual({
+      type: "array",
+      length: 1,
+      itemFields: { name: "string", cardNumber: "number", relay: "array" },
+    });
+    expect(JSON.stringify(m)).not.toContain("Mario");
+    expect(JSON.stringify(m)).not.toContain("1234567890");
   });
 });

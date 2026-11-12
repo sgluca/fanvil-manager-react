@@ -164,16 +164,55 @@ export function addressAllowed(address: string, cidrs: string[]) {
     return false;
   }
 }
+const safeKey = (k: string) => (/^[a-zA-Z_.]{1,60}$/.test(k) ? k : "[field]");
+const kindOf = (v: unknown) =>
+  v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
+// Names and JS types only: never values, so card numbers, PINs and names cannot leak.
+function shapeOf(v: unknown) {
+  if (Array.isArray(v)) {
+    const first = v.find((x) => x && typeof x === "object");
+    return {
+      type: "array",
+      length: v.length,
+      ...(first
+        ? {
+            itemFields: Object.fromEntries(
+              Object.entries(first)
+                .slice(0, 30)
+                .map(([k, x]) => [safeKey(k), kindOf(x)]),
+            ),
+          }
+        : {}),
+    };
+  }
+  if (v && typeof v === "object")
+    return {
+      type: "object",
+      fields: Object.fromEntries(
+        Object.entries(v)
+          .slice(0, 30)
+          .map(([k, x]) => [safeKey(k), kindOf(x)]),
+      ),
+    };
+  return { type: kindOf(v) };
+}
 export function metadata(body: unknown) {
   return {
     format:
       body === null ? "null" : Array.isArray(body) ? "array" : typeof body,
     fields:
       body && typeof body === "object"
-        ? Object.keys(body)
-            .slice(0, 30)
-            .map((k) => (/^[a-zA-Z_.]{1,60}$/.test(k) ? k : "[field]"))
+        ? Object.keys(body).slice(0, 30).map(safeKey)
         : [],
+    shape:
+      body && typeof body === "object" && !Array.isArray(body)
+        ? Object.fromEntries(
+            Object.entries(body)
+              .slice(0, 30)
+              .filter(([k]) => k !== "info")
+              .map(([k, v]) => [safeKey(k), shapeOf(v)]),
+          )
+        : {},
     verified: false,
   };
 }
