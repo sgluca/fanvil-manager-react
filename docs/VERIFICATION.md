@@ -59,3 +59,7 @@ Quattro test aggiuntivi coprono flag, approvazione e LAN mancante senza rete, CI
 Il body di `POST /api/device_info` riproduce la collezione e la richiesta funzionante riportata dall’utente: `type.item` è `device info`, con spazio. Il parser della risposta mantiene `device_info`, con underscore, come nella risposta riportata da i60K 2.12.55. Il server mock HTTP rifiuta la variante errata della richiesta con HTTP 500; un test aggiuntivo normalizza una fixture sanitizzata senza includere il MAC reale o dedurre lo stato fisico della porta. Totale aggiornato: 46 test in 5 suite. Nessuna richiesta al citofono reale eseguita dall’ambiente di sviluppo.
 
 Il test HTTP della richiesta Bruno verifica anche `Content-Length` e assenza di `Transfer-Encoding: chunked`, per inviare un body JSON a lunghezza nota ai dispositivi embedded.
+
+## Origine delle informazioni nella diagnostica
+
+La normalizzazione device info usa `schemaSource: manual-0.8.7` per indicare lo schema di parsing, senza sovrascrivere `source: real` dell’Inspector. Il test della fixture i60K controlla separatamente origine reale, schema e flag di verifica. Le risposte HTTP 200 delle altre letture restano metadati diagnostici: il solo esito HTTP non abilita import o scritture, né certifica lo stato fisico della porta.

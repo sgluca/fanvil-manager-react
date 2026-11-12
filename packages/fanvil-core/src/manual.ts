@@ -24,7 +24,7 @@ export function parseDeviceInfo(body: unknown) {
     firmware: info["info.sys.FwVersion"]?.toString() ?? null,
     uptime: info["info.sys.UpTime"]?.toString() ?? null,
     physicalDoorState: "unknown",
-    source: "manual-0.8.7",
+    schemaSource: "manual-0.8.7",
     hardwareVerified: false,
   };
 }

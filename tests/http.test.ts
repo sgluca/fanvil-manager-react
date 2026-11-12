@@ -56,7 +56,7 @@ const server = createServer(async (req: IncomingMessage, res) => {
     return;
   }
   if (behavior === "slow") {
-    setTimeout(() => res.end("{}"), 200).unref();
+    setTimeout(() => res.end("{}"), 1500).unref();
     return;
   }
   // Model the observed firmware distinction: request has a space, response an underscore.
@@ -103,7 +103,7 @@ beforeAll(async () => {
   client = new FanvilHttpClient({
     enabled: true,
     cidrs: [local.address + "/32"],
-    timeoutMs: 80,
+    timeoutMs: 2000,
     maxBytes: 1024,
     concurrency: 1,
   });
@@ -147,13 +147,20 @@ describe("Trasporto su server locale, nessun dispositivo reale", () => {
   });
   it("timeout e limite concorrenza si rilasciano dopo errore", async () => {
     behavior = "slow";
-    const first = client.read(target, "deviceInfo");
-    await expect(client.read(target, "peopleRead")).rejects.toThrow(
+    const timeoutClient = new FanvilHttpClient({
+      enabled: true,
+      cidrs: [target.host + "/32"],
+      timeoutMs: 500,
+      maxBytes: 1024,
+      concurrency: 1,
+    });
+    const first = timeoutClient.read(target, "deviceInfo");
+    await expect(timeoutClient.read(target, "peopleRead")).rejects.toThrow(
       "concorrenza",
     );
     await expect(first).rejects.toThrow("Connessione");
     behavior = "ok";
-    expect((await client.read(target, "deviceInfo")).status).toBe(200);
+    expect((await timeoutClient.read(target, "deviceInfo")).status).toBe(200);
   });
   it("distingue autenticazione Basic/Digest e risposta non JSON senza esporre risposte o challenge", async () => {
     behavior = "auth";

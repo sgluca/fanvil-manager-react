@@ -161,6 +161,16 @@ describe("Sicurezza e contratto manuale", () => {
       physicalDoorState: "unknown",
       hardwareVerified: false,
     });
+    const diagnostic = {
+      source: "real",
+      ...normalizeDeviceInfo(deviceInfoI60k),
+    };
+    expect(diagnostic).toMatchObject({
+      source: "real",
+      schemaSource: "manual-0.8.7",
+      recognized: true,
+      hardwareVerified: false,
+    });
     expect(JSON.stringify(normalizeDeviceInfo(deviceInfoI60k))).not.toContain(
       deviceInfoI60k.info["info.dev.Mac"],
     );
