@@ -498,6 +498,7 @@ export async function buildApp(config: Config, existingStore?: Store) {
           "cardsRead",
           "pinsRead",
           "eventsRead",
+          "userlistRead",
         ])
         .default("deviceInfo"),
     }),

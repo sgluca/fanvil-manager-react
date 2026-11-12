@@ -1085,6 +1085,15 @@ function App() {
                                         x.skipped +
                                         " senza identificativo ignorati"
                                       : "") +
+                                    (x.userlist
+                                      ? " (da elenco utenti: " +
+                                        x.userlist.disabled +
+                                        " disattivati e " +
+                                        x.userlist.empty +
+                                        " senza credenziali ignorati; " +
+                                        x.userlist.limited +
+                                        " con limite di usi o periodo, non rappresentato localmente)"
+                                      : "") +
                                     (partial
                                       ? ". ATTENZIONE: lettura forse incompleta (limite pagine o risposta ripetuta dal firmware)"
                                       : ""),

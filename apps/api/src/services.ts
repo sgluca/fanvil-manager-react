@@ -10,6 +10,7 @@ import {
 import {
   parseCredentialsPage,
   parseLogsPage,
+  parseUserlist,
 } from "../../../packages/fanvil-core/src/manual.ts";
 import { FanvilReadError } from "../../../packages/fanvil-core/src/errors.ts";
 export type DeviceReader = (
@@ -365,6 +366,47 @@ export async function stage(
     const seen = new Set<string>();
     let skipped = 0;
     items = [];
+    let userlist: Row | undefined;
+    if (!cards.items.length && !pins.items.length) {
+      // This firmware keeps its credentials in the CSV export, not in card_info/password_info.
+      const csv = await reader("userlistRead", 1);
+      const rows = parsed("userlist", csv.body, () => parseUserlist(csv.body));
+      let disabled = 0,
+        empty = 0,
+        limited = 0;
+      for (const r of rows) {
+        if (r.status.toLowerCase() === "disable") {
+          disabled++;
+          continue;
+        }
+        if (!r.card && !r.pin) {
+          empty++;
+          continue;
+        }
+        // One person key per row (card first, else PIN), so card and PIN land on the same person.
+        const rowKey =
+          "row:" +
+          secrets
+            .fingerprint(r.card ? "rfid" : "pin", r.card || r.pin)
+            .slice(0, 32);
+        const name =
+          r.name || "Senza nome " + masked("rfid", r.card || r.pin).slice(-8);
+        if (r.status.toLowerCase() === "period" || r.times > 0) limited++;
+        for (const [kind, value] of [
+          ["rfid", r.card],
+          ["pin", r.pin],
+        ] as const)
+          if (value) {
+            const remoteId = rowKey + "#" + kind;
+            if (seen.has(remoteId)) skipped++;
+            else {
+              seen.add(remoteId);
+              items.push({ remoteId, name, kind, value });
+            }
+          }
+      }
+      userlist = { rows: rows.length, disabled, empty, limited };
+    }
     for (const c of [...cards.items, ...pins.items]) {
       // A PIN without refid has no stable remote identity: derive one from the value only.
       // Card numbers are never exposed: the remote id is a keyed fingerprint, stable per key.
@@ -383,13 +425,18 @@ export async function stage(
       items.push({ remoteId, name: c.name, kind: c.kind, value: c.value });
     }
     summary = {
-      cards: cards.items.length,
-      pins: pins.items.length,
+      cards: userlist
+        ? items.filter((i) => i.kind === "rfid").length
+        : cards.items.length,
+      pins: userlist
+        ? items.filter((i) => i.kind === "pin").length
+        : pins.items.length,
       skipped,
       cardsComplete: cards.complete,
       pinsComplete: pins.complete,
       cardsStoppedBy: cards.stoppedBy,
       pinsStoppedBy: pins.stoppedBy,
+      ...(userlist ? { userlist } : {}),
     };
   }
   const batchId = randomUUID();
@@ -447,7 +494,7 @@ export function batchView(s: Store, id: string) {
           s.get(
             "SELECT person_id FROM imported_people WHERE device_id=? AND remote_id=?",
             b.device_id,
-            item.remote_id,
+            String(item.remote_id).split("#")[0],
           )?.person_id ??
           s.get(
             "SELECT person_id FROM credentials WHERE fingerprint=(SELECT fingerprint FROM staging_items WHERE id=?)",
@@ -472,10 +519,12 @@ export function reconcile(
       "SELECT * FROM staging_items WHERE batch_id=?",
       batchId,
     )) {
+      // Items of one device row ("row:…#card", "row:…#pin") share one person.
+      const personKey = String(i.remote_id).split("#")[0];
       const imported = s.get(
         "SELECT person_id FROM imported_people WHERE device_id=? AND remote_id=?",
         b.device_id,
-        i.remote_id,
+        personKey,
       );
       const credential = i.fingerprint
         ? s.get("SELECT * FROM credentials WHERE fingerprint=?", i.fingerprint)
@@ -509,7 +558,7 @@ export function reconcile(
       s.run(
         "INSERT OR IGNORE INTO imported_people VALUES(?,?,?)",
         b.device_id,
-        i.remote_id,
+        personKey,
         personId,
       );
       let credentialId =

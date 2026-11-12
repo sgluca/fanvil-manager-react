@@ -196,7 +196,29 @@ function shapeOf(v: unknown) {
     };
   return { type: kindOf(v) };
 }
-export function metadata(body: unknown) {
+// Protocol status codes are short tokens, not personal data: keep them to explain device answers.
+const codeOf = (v: unknown) =>
+  (typeof v === "string" || typeof v === "number") &&
+  /^[\w-]{1,8}$/.test(String(v))
+    ? String(v)
+    : undefined;
+export function metadata(body: unknown): Record<string, any> {
+  if (typeof body === "string") {
+    const lines = body
+      .replace(/^\uFEFF/, "")
+      .split(/\r?\n/)
+      .filter(Boolean);
+    return {
+      format: "csv",
+      fields: [],
+      columns: (lines[0] ?? "")
+        .split(",")
+        .slice(0, 30)
+        .map((c) => safeKey(c.trim().replace(/\s+/g, "_"))),
+      rows: Math.max(lines.length - 1, 0),
+      verified: false,
+    };
+  }
   return {
     format:
       body === null ? "null" : Array.isArray(body) ? "array" : typeof body,
@@ -213,6 +235,9 @@ export function metadata(body: unknown) {
               .map(([k, v]) => [safeKey(k), shapeOf(v)]),
           )
         : {},
+    ...(body && typeof body === "object" && codeOf((body as any).code)
+      ? { deviceCode: codeOf((body as any).code) }
+      : {}),
     verified: false,
   };
 }
@@ -352,7 +377,13 @@ export class FanvilHttpClient {
                 const raw = Buffer.concat(chunks).toString();
                 resolve({
                   status: res.statusCode ?? 200,
-                  body: raw ? JSON.parse(raw) : null,
+                  // /api/userlist answers CSV text, every other read answers JSON.
+                  body:
+                    operation === "userlistRead"
+                      ? raw
+                      : raw
+                        ? JSON.parse(raw)
+                        : null,
                 });
               } catch {
                 reject(
