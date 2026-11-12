@@ -24,7 +24,7 @@ Registrazione manuale e approvazione admin. Lista operazioni fissa, rete autoriz
 
 ## Manutenzione
 
-Processo e comandi CLI acquisiscono lo stesso lock, singola replica. Restore solo offline, integrity_check e foreign_key_check prima di sostituire il DB, copia preventiva, audit di ripristino. Per invalidare sessioni dopo restore ruotare SESSION_SECRET. ENCRYPTION_KEY non ha rotazione automatica: conservarla, non sostituirla su un DB esistente senza una migrazione di ricifratura.
+Processo applicativo e creazione utenti CLI acquisiscono un lock condiviso di manutenzione; un lock esclusivo separato impedisce una seconda istanza applicativa. Backup/ripristino CLI e seed richiedono il lock esclusivo di manutenzione e il servizio fermato. Il bootstrap utente funziona anche nel container avviato: password nascosta sul TTY oppure stdin per automazione, hash Argon2id e inserimento utente/audit nella stessa transazione. I duplicati non sovrascrivono account esistenti. Restore solo offline, integrity_check e foreign_key_check prima di sostituire il DB, copia preventiva, audit di ripristino. Per invalidare sessioni dopo restore ruotare SESSION_SECRET. ENCRYPTION_KEY non ha rotazione automatica: conservarla, non sostituirla su un DB esistente senza una migrazione di ricifratura.
 
 ## Dipendenze
 

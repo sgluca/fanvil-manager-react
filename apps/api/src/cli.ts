@@ -1,10 +1,9 @@
-import { hash, argon2id } from "argon2";
-import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { Store } from "../../../packages/database/src/index.ts";
 import { Secrets } from "../../../packages/fanvil-core/src/index.ts";
 import { configFromEnv } from "./config.ts";
 import { seedDemo } from "./services.ts";
+import { createAdmin, readAdminPassword } from "./admin.ts";
 import { acquireLock, restoreOffline } from "./maintenance.ts";
 const [command, arg] = process.argv.slice(2),
   config = configFromEnv();
@@ -14,30 +13,15 @@ try {
     await restoreOffline(config.databasePath, arg);
     console.log("Ripristino completato");
   } else {
-    const unlock = acquireLock(config.databasePath),
+    const unlock = acquireLock(
+        config.databasePath,
+        command === "admin:create" ? "shared" : "exclusive",
+      ),
       s = new Store(config.databasePath);
     try {
       if (command === "admin:create") {
-        if (!arg || !/^[a-zA-Z0-9_.-]{3,80}$/.test(arg))
-          throw Error(
-            "Uso: admin:create nomeutente; password da stdin, almeno 12 caratteri",
-          );
-        if (process.stdin.isTTY)
-          throw Error(
-            "Fornire password tramite stdin senza mostrarla nel terminale",
-          );
-        const password = readFileSync(0, "utf8").trimEnd();
-        if (password.length < 12 || password.length > 200)
-          throw Error("Password: 12–200 caratteri");
-        const id = randomUUID();
-        s.run(
-          "INSERT INTO admin_users(id,username,password_hash,role) VALUES(?,?,?,?)",
-          id,
-          arg,
-          await hash(password, { type: argon2id }),
-          "admin",
-        );
-        s.audit(null, "admin.bootstrap", id);
+        if (!arg) throw Error("Uso: admin:create nomeutente");
+        await createAdmin(s, arg, await readAdminPassword());
         console.log("Amministratore creato");
       } else if (command === "demo:seed") {
         if (!config.demo) throw Error("Impostare DEMO_MODE=true");

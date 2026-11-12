@@ -3,12 +3,27 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync, backup } from "node:sqlite";
 import { Store, now } from "../../../packages/database/src/index.ts";
 // SQLite advisory locking is released by the OS on crash, including across container PID namespaces.
-export function acquireLock(database: string) {
+export function acquireLock(
+  database: string,
+  mode: "shared" | "exclusive" = "exclusive",
+) {
   mkdirSync(dirname(database), { recursive: true, mode: 0o700 });
   const lock = new DatabaseSync(database + ".lock");
   try {
+    lock.exec("PRAGMA busy_timeout=0;");
+    if (
+      !lock
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='process_lock'",
+        )
+        .get()
+    ) {
+      lock.exec("CREATE TABLE process_lock(id INTEGER PRIMARY KEY);");
+    }
     lock.exec(
-      "PRAGMA busy_timeout=0; BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS process_lock(id INTEGER PRIMARY KEY);",
+      mode === "shared"
+        ? "BEGIN; SELECT id FROM process_lock LIMIT 1;"
+        : "BEGIN EXCLUSIVE;",
     );
   } catch {
     lock.close();
@@ -27,6 +42,23 @@ export function acquireLock(database: string) {
       }
     }
   };
+}
+// One application process, with a shared maintenance lock that permits admin creation.
+export function acquireRuntimeLock(database: string) {
+  const singleton = acquireLock(database + ".instance");
+  try {
+    const maintenance = acquireLock(database, "shared");
+    return () => {
+      try {
+        maintenance();
+      } finally {
+        singleton();
+      }
+    };
+  } catch (error) {
+    singleton();
+    throw error;
+  }
 }
 export async function restoreOffline(database: string, source: string) {
   if (resolve(database) === resolve(source))

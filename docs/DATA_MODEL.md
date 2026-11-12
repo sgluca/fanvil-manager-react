@@ -12,4 +12,4 @@ SQLite in WAL, foreign key attive e migrazioni transazionali nella tabella `migr
 
 La preview calcola un hash dello stato locale, delle regole e dello stato remoto mock. Apply rifiuta una preview obsoleta, richiede conferma e opera in transazione. Rimuove solo elementi noti e già gestiti, o esplicitamente revocati; non elimina credenziali remote sconosciute. Una seconda applicazione della stessa preview completata restituisce lo stesso esito senza ripetere le operazioni.
 
-Backup tramite `node:sqlite.backup`, non copia del file WAL. Il ripristino offline usa lo stesso lock del processo applicativo, verifica la compatibilità e conserva un backup precedente alla sostituzione.
+Backup tramite `node:sqlite.backup`, non copia del file WAL. Il ripristino offline richiede un lock esclusivo incompatibile con il lock condiviso del processo applicativo e del bootstrap utenti; verifica la compatibilità e conserva un backup precedente alla sostituzione. Un lock separato garantisce una sola istanza applicativa.

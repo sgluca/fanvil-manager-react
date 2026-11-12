@@ -39,20 +39,11 @@ const probe = (create) => {
   );
 };
 try {
+  compose(["up", "-d", "--no-build", "--wait", "--wait-timeout", "60"]);
   compose(
-    [
-      "run",
-      "--rm",
-      "-T",
-      "app",
-      "node",
-      "dist/cli.js",
-      "admin:create",
-      "smoke-admin",
-    ],
+    ["exec", "-T", "app", "node", "dist/cli.js", "admin:create", "smoke-admin"],
     password,
   );
-  compose(["up", "-d", "--no-build", "--wait", "--wait-timeout", "60"]);
   assert.equal(compose(["exec", "-T", "app", "id", "-u"]).trim(), "1000");
   const before = probe(true);
   compose(["kill", "-s", "SIGKILL", "app"]);
@@ -83,7 +74,7 @@ try {
   compose(["up", "-d", "--no-build", "--wait", "--wait-timeout", "60"]);
   assert.deepEqual(probe(false), before);
   console.log(
-    "Docker Compose: healthy, non-root, persistent after SIGKILL, backup and restore verified.",
+    "Docker Compose: online admin creation, health, non-root, persistence after SIGKILL, backup and restore verified.",
   );
 } catch (error) {
   console.error(error.message);

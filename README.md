@@ -51,18 +51,18 @@ Le scadenze, le revoche e i permessi locali **non diventano vincoli del disposit
    Imposta le variabili applicative, inclusi `NODE_ENV`, `ENCRYPTION_KEY` e `SESSION_SECRET`, come **Runtime only**: disattiva **Available at Buildtime**. Nessuna variabile applicativa è necessaria per compilare il frontend. La fase Docker di build installa comunque esplicitamente le devDependencies con `npm ci --include=dev`, anche se Coolify passa `NODE_ENV=production`; vengono rimosse prima di creare l'immagine runtime. Compose può essere analizzato per la build senza segreti; l'applicazione rifiuta invece l'avvio se chiave, segreto sessione o origine HTTPS mancano o non sono validi.
 3. Lascia `FANVIL_READ_ENABLED=false`, `FANVIL_WRITE_ENABLED=false`, `DEMO_MODE=false` per la configurazione iniziale operativa. Per una demo separata usa `DEMO_MODE=true` con un volume distinto.
 4. Avvia il deploy. Il volume nominato `fanvil_data` persiste `/app/data`; non eliminarlo durante gli aggiornamenti. Il primo avvio applica migrazioni transazionali.
-5. Prima di accedere, ferma temporaneamente il servizio e crea l’admin da una shell del server con accesso al progetto e alle stesse variabili:
+5. Apri il terminale del container `app` in Coolify e crea l’amministratore con l’applicazione avviata:
 
 ```bash
-docker compose stop app
-read -rs -p 'Password amministratore: ' admin_password
-printf '\n'
-printf '%s' "$admin_password" | docker compose run --rm -T app node dist/cli.js admin:create amministratore
-unset admin_password
-docker compose up -d
+cd /app
+node dist/cli.js admin:create amministratore
 ```
 
-Il lock impedisce comandi amministrativi concorrenti sullo stesso database. Se si lavora dal pannello Coolify, eseguire il comando one-off con lo stesso volume e le stesse variabili del servizio fermato. Non usare il terminale del container già attivo per il bootstrap CLI.
+Inserisci una password di 12–200 caratteri quando richiesta: l’input è nascosto. Dopo `Amministratore creato`, accedi al portale con utente `amministratore` e la password appena scelta. Non esiste una password predefinita. Un nome già presente viene rifiutato senza cambiare la password dell’account esistente.
+
+Da una shell del server puoi eseguire lo stesso comando con `docker compose exec app node dist/cli.js admin:create amministratore`. Per automazione rimane supportato l’input della password tramite stdin con `-T`, senza inserirla negli argomenti del comando.
+
+La creazione utente e il relativo audit avvengono nella stessa transazione SQLite. Il lock condiviso permette questa operazione mentre il portale è attivo; il lock esclusivo continua a richiedere il servizio fermato per backup/ripristino CLI e seed demo. Un lock separato impedisce l’avvio di una seconda istanza applicativa sullo stesso database.
 
 Su un host Docker configurato, dopo aver preparato `.env`, l’avvio standard è `docker compose up --build -d`. Il container è non-root, filesystem principale read-only, `/tmp` temporaneo, healthcheck `/api/health`, restart `unless-stopped`. Il volume nuovo riceve la proprietà dell’utente Node. Volumi importati devono essere leggibili/scrivibili dall’UID 1000.
 

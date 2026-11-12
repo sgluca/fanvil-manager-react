@@ -1,8 +1,8 @@
 import { buildApp } from "./app.ts";
 import { configFromEnv } from "./config.ts";
-import { acquireLock } from "./maintenance.ts";
+import { acquireRuntimeLock } from "./maintenance.ts";
 const config = configFromEnv(),
-  unlock = acquireLock(config.databasePath);
+  unlock = acquireRuntimeLock(config.databasePath);
 try {
   const app = await buildApp(config);
   let stopping = false;

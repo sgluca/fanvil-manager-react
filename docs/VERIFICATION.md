@@ -41,3 +41,9 @@ Riprodotto il fallimento del Dockerfile precedente passando `NODE_ENV=production
 Il Dockerfile ora usa `npm ci --include=dev --strict-ssl=true`, poi rimuove le dipendenze di sviluppo prima di creare il runtime. La build con ARG di produzione è stata completata con successo. La CI ripete esplicitamente questa configurazione.
 
 Compose è analizzabile anche senza le tre variabili sensibili/obbligatorie nell'ambiente di build. Tre test aggiuntivi verificano che l'applicazione rifiuti comunque chiavi, segreto sessione e origine HTTPS mancanti o non validi al runtime. Su Coolify le variabili applicative vanno configurate come Runtime only, senza Available at Buildtime.
+
+## Bootstrap amministratore dal container avviato
+
+Il comando `node dist/cli.js admin:create amministratore` accetta input interattivo nascosto sul TTY e continua a supportare stdin per automazione. Verifica manuale su pseudo-terminale: prompt visibile, password sintetica non mostrata e account creato.
+
+Quattro test aggiuntivi verificano lock condivisi/esclusivi, singola istanza, creazione account con app avviata da un processo separato, hash password, duplicati, input non valido e rollback in caso di errore audit. Totale aggiornato: 41 test in 5 suite. Il test Compose crea ora l'amministratore con `docker compose exec` mentre il servizio è già attivo, prima di verificare login, persistenza dopo crash e backup/ripristino.
