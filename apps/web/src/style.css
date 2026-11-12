@@ -1311,3 +1311,13 @@ dialog::backdrop {
     text-align: left;
   }
 }
+
+.sidebar {
+  overflow-y: auto;
+}
+.sidebar > * {
+  flex-shrink: 0;
+}
+.profile {
+  background: var(--navy);
+}
