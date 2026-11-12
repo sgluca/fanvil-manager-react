@@ -1,3 +1,4 @@
+import deviceInfoI60k from "./fixtures/device-info-i60k-sanitized.json";
 import { describe, it, expect } from "vitest";
 import { randomBytes } from "node:crypto";
 import {
@@ -150,6 +151,19 @@ describe("Sicurezza e contratto manuale", () => {
       physicalDoorState: "unknown",
       hardwareVerified: false,
     });
+  });
+  it("normalizza la risposta i60K riportata da Bruno senza diffondere MAC o certificare lo stato porta", () => {
+    expect(readRequests.deviceInfo.body.type.item).toBe("device info");
+    expect(normalizeDeviceInfo(deviceInfoI60k)).toMatchObject({
+      recognized: true,
+      model: "i60k",
+      firmware: "2.12.55",
+      physicalDoorState: "unknown",
+      hardwareVerified: false,
+    });
+    expect(JSON.stringify(normalizeDeviceInfo(deviceInfoI60k))).not.toContain(
+      deviceInfoI60k.info["info.dev.Mac"],
+    );
   });
   it("scarta segreti nei log e relay ambiguo, converte epoch", () => {
     const parsed = parseLogs({

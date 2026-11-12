@@ -53,3 +53,9 @@ Quattro test aggiuntivi verificano lock condivisi/esclusivi, singola istanza, cr
 L’Inspector restituisce codici e messaggi specifici per i blocchi di configurazione e gli errori del trasporto. Anche i tentativi falliti producono uno storico diagnostico sanitizzato e audit con codice errore. Le risposte 401 con challenge Digest vengono segnalate come autenticazione non ancora supportata, senza salvare header o body del dispositivo. Gli spazi tra reti CIDR vengono normalizzati.
 
 Quattro test aggiuntivi coprono flag, approvazione e LAN mancante senza rete, CIDR con spazi, Basic/Digest e risposte non JSON su server locale, propagazione del codice errore e assenza di segreti in audit/diagnostica. Totale aggiornato: 45 test in 5 suite. Nessuna richiesta eseguita sui citofoni reali.
+
+## Allineamento della richiesta device info alla prova Bruno
+
+Il body di `POST /api/device_info` riproduce la collezione e la richiesta funzionante riportata dall’utente: `type.item` è `device info`, con spazio. Il parser della risposta mantiene `device_info`, con underscore, come nella risposta riportata da i60K 2.12.55. Il server mock HTTP rifiuta la variante errata della richiesta con HTTP 500; un test aggiuntivo normalizza una fixture sanitizzata senza includere il MAC reale o dedurre lo stato fisico della porta. Totale aggiornato: 46 test in 5 suite. Nessuna richiesta al citofono reale eseguita dall’ambiente di sviluppo.
+
+Il test HTTP della richiesta Bruno verifica anche `Content-Length` e assenza di `Transfer-Encoding: chunked`, per inviare un body JSON a lunghezza nota ai dispositivi embedded.

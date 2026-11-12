@@ -8,7 +8,14 @@ import {
   type Target,
 } from "../packages/fanvil-core/src/index.ts";
 let behavior = "ok",
-  received: { url: string; auth: string; body: string; method: string }[] = [];
+  received: {
+    url: string;
+    auth: string;
+    body: string;
+    method: string;
+    contentLength: string;
+    transferEncoding: string;
+  }[] = [];
 let target: Target, client: FanvilHttpClient;
 const server = createServer(async (req: IncomingMessage, res) => {
   let body = "";
@@ -18,6 +25,8 @@ const server = createServer(async (req: IncomingMessage, res) => {
     auth: req.headers.authorization ?? "",
     body,
     method: req.method!,
+    contentLength: String(req.headers["content-length"] ?? ""),
+    transferEncoding: String(req.headers["transfer-encoding"] ?? ""),
   });
   if (behavior === "redirect") {
     res.writeHead(302, { location: "http://127.0.0.1/forbidden" }).end();
@@ -48,6 +57,14 @@ const server = createServer(async (req: IncomingMessage, res) => {
   }
   if (behavior === "slow") {
     setTimeout(() => res.end("{}"), 200).unref();
+    return;
+  }
+  // Model the observed firmware distinction: request has a space, response an underscore.
+  if (
+    req.url === "/api/device_info" &&
+    JSON.parse(body).type.item !== "device info"
+  ) {
+    res.writeHead(500).end();
     return;
   }
   res.setHeader("content-type", "application/json");
@@ -96,7 +113,7 @@ afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
 });
 describe("Trasporto su server locale, nessun dispositivo reale", () => {
-  it("invia solo richiesta allowlisted con Basic e sintassi del manuale", async () => {
+  it("invia la richiesta Bruno verificata con Basic, spazio nel body e underscore nella risposta", async () => {
     behavior = "ok";
     received = [];
     const r = await client.read(target, "deviceInfo");
@@ -109,9 +126,14 @@ describe("Trasporto su server locale, nessun dispositivo reale", () => {
         Buffer.from("test-local:synthetic-password").toString("base64"),
     });
     expect(JSON.parse(received[0].body).type).toEqual({
-      item: "device_info",
+      item: "device info",
       cmd: "get",
     });
+    expect((r.body as any).type.item).toBe("device_info");
+    expect(received[0].contentLength).toBe(
+      String(Buffer.byteLength(received[0].body)),
+    );
+    expect(received[0].transferEncoding).toBe("");
   });
   it("non segue redirect e limita dimensione e errori HTTP", async () => {
     behavior = "redirect";

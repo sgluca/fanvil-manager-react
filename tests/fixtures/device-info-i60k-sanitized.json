@@ -1,0 +1,15 @@
+{
+  "type": { "item": "device_info", "cmd": "get" },
+  "info": {
+    "info.dev.Model": "i60k",
+    "info.sys.FwVersion": "2.12.55",
+    "info.dev.Mac": "02:00:00:00:00:01",
+    "info.sys.UpTime": "3600s",
+    "info.sys.MemFree": "16.0",
+    "info.sip.line.1.registerCode": "200",
+    "info.sip.line.1.callStatus": "IDLE",
+    "info.io.DoorLook.1.Status": "close",
+    "info.io.DoorLook.2.Status": ""
+  },
+  "code": "200"
+}

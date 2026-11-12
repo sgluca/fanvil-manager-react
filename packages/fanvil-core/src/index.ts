@@ -65,11 +65,12 @@ export function redact(value: unknown): unknown {
   return typeof value === "string" ? "[text omitted]" : value;
 }
 export const readRequests = {
+  // Collection and reported i60K request use a space; the response uses an underscore.
   deviceInfo: {
     method: "POST",
     path: "/api/device_info",
     body: {
-      type: { item: "device_info", cmd: "get" },
+      type: { item: "device info", cmd: "get" },
       info: Object.fromEntries(
         [
           "info.dev.Model",
@@ -246,7 +247,12 @@ export class FanvilHttpClient {
             path: spec.path,
             method: spec.method,
             auth: target.username + ":" + target.password,
-            headers: { "content-type": "application/json" },
+            headers: {
+              "content-type": "application/json",
+              ...(body !== undefined
+                ? { "content-length": Buffer.byteLength(body) }
+                : {}),
+            },
             lookup: (_host, _opts: any, cb: any) =>
               _opts.all
                 ? cb(null, [address])
