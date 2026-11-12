@@ -64,6 +64,14 @@ export const logResponse = envelope.extend({
   ),
   total: scalar.optional(),
 });
+const totalOf = (v: unknown) =>
+  v !== undefined && Number.isInteger(Number(v)) && Number(v) >= 0
+    ? Number(v)
+    : null;
+export function parseLogsPage(body: unknown) {
+  const r = logResponse.parse(body);
+  return { items: parseLogs(body), total: totalOf(r.total) };
+}
 export function parseLogs(body: unknown) {
   return logResponse.parse(body).data.map((r) => {
     const seconds = Number(r.openTime);
@@ -99,6 +107,21 @@ export function parseCredentials(body: unknown, kind: "rfid" | "pin") {
         remoteId: r.refid ? "pin:" + r.refid : null,
         readability: r.password ? "readable" : "unrecoverable",
       }));
+}
+export type ParsedCredential = {
+  name: string;
+  kind: "rfid" | "pin";
+  value: string | null;
+  remoteId: string | null;
+  readability: string;
+};
+export function parseCredentialsPage(
+  body: unknown,
+  kind: "rfid" | "pin",
+): { items: ParsedCredential[]; total: number | null } {
+  const r =
+    kind === "rfid" ? cardsResponse.parse(body) : pinsResponse.parse(body);
+  return { items: parseCredentials(body, kind), total: totalOf(r.total) };
 }
 // Pure serializers only: no transport or production write capability is exposed.
 export function documentedCardAdd(v: {

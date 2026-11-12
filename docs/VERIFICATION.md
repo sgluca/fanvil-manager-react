@@ -63,3 +63,9 @@ Il test HTTP della richiesta Bruno verifica anche `Content-Length` e assenza di 
 ## Origine delle informazioni nella diagnostica
 
 La normalizzazione device info usa `schemaSource: manual-0.8.7` per indicare lo schema di parsing, senza sovrascrivere `source: real` dell’Inspector. Il test della fixture i60K controlla separatamente origine reale, schema e flag di verifica. Le risposte HTTP 200 delle altre letture restano metadati diagnostici: il solo esito HTTP non abilita import o scritture, né certifica lo stato fisico della porta.
+
+## Lettura reale completa (carte, PIN, eventi)
+
+Import in staging ed acquisizione eventi funzionano ora anche su dispositivi reali approvati, leggendo tutte le finestre di indice (100 elementi, massimo 50 pagine, arresto su pagina breve, totale o pagina ripetuta). Un errore di trasporto o schema annulla l’operazione senza dati parziali; ogni fallimento produce diagnostica e audit sanitizzati. Il numero carta non compare in staging, audit o API (identificativo = impronta HMAC). Eventi con relay 0/ignoto restano senza relay, mai attribuiti a persone.
+
+Otto test nuovi (`tests/read.test.ts`) usano un lettore sintetico, non la rete: finestre di indice, condizioni di arresto, import multipagina, riconciliazione come osservato `real`, reimport senza duplicati, schema non conforme, errore a metà lettura, eventi deduplicati. Totale: 54 test, 49 eseguiti qui; i 5 di `tests/http.test.ts` richiedono un’interfaccia LAN privata assente nel sandbox e non sono stati eseguiti. Nessuna richiesta ai citofoni reali: i parser di carte, PIN ed eventi restano non verificati sul firmware e vanno provati con una risposta reale sanitizzata.

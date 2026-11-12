@@ -16,7 +16,7 @@ import {
 import { existsSync } from "node:fs";
 import { readFile, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { Store, now } from "../../../packages/database/src/index.ts";
+import { Store, now, type Row } from "../../../packages/database/src/index.ts";
 import {
   Secrets,
   masked,
@@ -56,6 +56,7 @@ import {
   reconcile,
   collectEvents,
   seedDemo,
+  type DeviceReader,
   jobView,
 } from "./services.ts";
 import type { Config } from "./config.ts";
@@ -443,6 +444,47 @@ export async function buildApp(config: Config, existingStore?: Store) {
     cidrs: config.cidrs,
     timeoutMs: config.timeoutMs,
   });
+  // Single entry point for real reads: admin only, per-device approval and A10 limits enforced
+  // here, failures stored as sanitized diagnostics and audited.
+  const deviceReader = (req: FastifyRequest, d: Row): DeviceReader => {
+    admin(req);
+    if (!d.secret) fail("Credenziali dispositivo mancanti", 409);
+    const auth = secrets.decrypt(d.secret);
+    return async (operation, page) => {
+      if (d.model === "A10" && operation !== "deviceInfo")
+        fail("Endpoint non supportato per A10 nel manuale 0.8.7", 409);
+      try {
+        return await client.read(
+          { ...d, approved: !!d.approved, ...auth } as any,
+          operation,
+          page,
+        );
+      } catch (error) {
+        const failure = safeReadError(error);
+        s.transaction(() => {
+          s.run(
+            "INSERT INTO diagnostics VALUES(?,?,?,?,?)",
+            randomUUID(),
+            d.id,
+            operation,
+            JSON.stringify({
+              source: "real",
+              success: false,
+              code: failure.code,
+              message: failure.message,
+              ...(failure.remoteStatus ? { status: failure.remoteStatus } : {}),
+            }),
+            now(),
+          );
+          audit(req, "inspector.failed", d.id, {
+            operation,
+            code: failure.code,
+          });
+        });
+        throw failure;
+      }
+    };
+  };
   route(
     "POST",
     "/api/devices/:id/inspect",
@@ -480,59 +522,25 @@ export async function buildApp(config: Config, existingStore?: Store) {
           key,
         );
       } else {
-        admin(req);
-        if (!d.secret) fail("Credenziali dispositivo mancanti", 409);
-        if (d.model === "A10" && operation !== "deviceInfo")
-          fail("Endpoint non supportato per A10 nel manuale 0.8.7", 409);
-        const auth = secrets.decrypt(d.secret);
-        try {
-          const response = await client.read(
-            { ...d, approved: !!d.approved, ...auth },
-            operation,
-          );
-          result = {
-            source: "real",
-            status: response.status,
-            ...metadata(response.body),
-            ...(operation === "deviceInfo"
-              ? normalizeDeviceInfo(response.body)
-              : {}),
-          };
-          const parsed =
-            operation === "deviceInfo"
-              ? normalizeDeviceInfo(response.body)
-              : null;
-          s.run(
-            "UPDATE devices SET last_contact=?,firmware=COALESCE(?,firmware) WHERE id=?",
-            now(),
-            parsed?.recognized ? parsed.firmware : null,
-            key,
-          );
-        } catch (error) {
-          const failure = safeReadError(error);
-          s.transaction(() => {
-            const metadata = {
-              source: "real",
-              success: false,
-              code: failure.code,
-              message: failure.message,
-              ...(failure.remoteStatus ? { status: failure.remoteStatus } : {}),
-            };
-            s.run(
-              "INSERT INTO diagnostics VALUES(?,?,?,?,?)",
-              randomUUID(),
-              key,
-              operation,
-              JSON.stringify(metadata),
-              now(),
-            );
-            audit(req, "inspector.failed", key, {
-              operation,
-              code: failure.code,
-            });
-          });
-          throw failure;
-        }
+        const response = await deviceReader(req, d)(operation, 1);
+        result = {
+          source: "real",
+          status: response.status,
+          ...metadata(response.body),
+          ...(operation === "deviceInfo"
+            ? normalizeDeviceInfo(response.body)
+            : {}),
+        };
+        const parsed =
+          operation === "deviceInfo"
+            ? normalizeDeviceInfo(response.body)
+            : null;
+        s.run(
+          "UPDATE devices SET last_contact=?,firmware=COALESCE(?,firmware) WHERE id=?",
+          now(),
+          parsed?.recognized ? parsed.firmware : null,
+          key,
+        );
       }
       s.transaction(() => {
         s.run(
@@ -850,7 +858,16 @@ export async function buildApp(config: Config, existingStore?: Store) {
     "/api/devices/:id/import",
     "Importa in staging",
     confirmSchema,
-    (req) => stage(s, secrets, getId(req), req.user!.id),
+    async (req) => {
+      const d = required(s, "devices", getId(req));
+      return stage(
+        s,
+        secrets,
+        d.id,
+        req.user!.id,
+        d.mode === "demo" ? undefined : deviceReader(req, d),
+      );
+    },
   );
   route("GET", "/api/imports", "Importazioni", undefined, () =>
     s
@@ -900,9 +917,17 @@ export async function buildApp(config: Config, existingStore?: Store) {
   route(
     "POST",
     "/api/devices/:id/events/collect",
-    "Acquisizione eventi demo",
+    "Acquisizione eventi",
     confirmSchema,
-    (req) => collectEvents(s, getId(req), req.user!.id),
+    async (req) => {
+      const d = required(s, "devices", getId(req));
+      return collectEvents(
+        s,
+        d.id,
+        req.user!.id,
+        d.mode === "demo" ? undefined : deviceReader(req, d),
+      );
+    },
   );
   const eventQuery = z.object({
     deviceId: id.optional(),

@@ -13,8 +13,8 @@ A10 non è elencato per card_info/password_info/persons/device_log; queste capac
 ## Intenzionalmente bloccato o limitato
 
 - Nessuna scrittura hardware, apertura porta, reboot, reset, modifica ora, import remoto o sincronizzazione automatica.
-- Importazione ed acquisizione eventi reali non abilitate senza validazione per firmware e identità remote stabili. Inspector restituisce solo metadati sanitizzati; dispositivo info riconosciuto può aggiornare firmware e ultimo contatto.
-- Letture card/PIN/persons/log limitate alla pagina 1–100; non rappresentano un inventario completo. userlist escluso perché non documentato per i modelli di questo progetto.
+- Import (carte, PIN) ed eventi reali sono in sola lettura, solo admin e solo dispositivi approvati; i parser seguono il manuale e **non** sono verificati sul firmware: una risposta non conforme interrompe l’operazione senza importare nulla. Il numero carta non è mai esposto: l’identificativo remoto è un’impronta HMAC (cambiare `ENCRYPTION_KEY` rompe il collegamento con importazioni precedenti). Un PIN senza refid e senza valore non ha identità e viene ignorato; il conteggio è nel riepilogo.
+- Letture complete a finestre da 100 (max 50 pagine); se il firmware ignora l’indice o si supera il limite la lettura è marcata incompleta. Inspector: una sola finestra. Persone e userlist: solo diagnostica strutturale, nessun import.
 - Autenticazione Digest non implementata; Basic è quella della collezione, il manuale è contraddittorio.
 - Revoche, scadenze, stato persona e permessi descrivono lo stato locale/desiderato; non promettono restrizioni sui citofoni. Finestre temporali disabilitate.
 - Stato fisico porta sempre sconosciuto; nessun comando è presentato come misura dello stato porta.
