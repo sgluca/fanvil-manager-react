@@ -1,0 +1,44 @@
+services:
+  app:
+    image: fanvil-manager:local
+    build: .
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_PATH: /app/data/fanvil.sqlite
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Configurare ENCRYPTION_KEY}
+      SESSION_SECRET: ${SESSION_SECRET:?Configurare SESSION_SECRET}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Configurare PUBLIC_ORIGIN con HTTPS}
+      TZ: Europe/Rome
+      DEMO_MODE: ${DEMO_MODE:-false}
+      FANVIL_READ_ENABLED: ${FANVIL_READ_ENABLED:-false}
+      FANVIL_WRITE_ENABLED: "false"
+      FANVIL_ALLOWED_CIDRS: ${FANVIL_ALLOWED_CIDRS:-}
+      FANVIL_TIMEOUT_MS: ${FANVIL_TIMEOUT_MS:-5000}
+      EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-90}
+    volumes:
+      - fanvil_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+volumes:
+  fanvil_data:

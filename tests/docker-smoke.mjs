@@ -14,7 +14,7 @@ const base = [
   "--host=unix:///var/run/docker.sock",
   "compose",
   "-p",
-  "fanvil-smoke",
+  "fanvil-smoke-" + randomBytes(4).toString("hex"),
 ];
 const compose = (args, input) =>
   execFileSync("docker", [...base, ...args], {

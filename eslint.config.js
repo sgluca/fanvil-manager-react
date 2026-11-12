@@ -11,6 +11,7 @@ export default ts.config(
       "test-results/**",
     ],
   },
+  { files: ["**/*.{js,mjs}"], languageOptions: { globals: globals.node } },
   js.configs.recommended,
   ...ts.configs.recommended,
   {
