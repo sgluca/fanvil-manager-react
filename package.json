@@ -1,0 +1,56 @@
+{
+  "name": "fanvil-manager",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch apps/api/src/main.ts",
+    "build": "vite build --config apps/web/vite.config.ts && esbuild apps/api/src/main.ts apps/api/src/cli.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
+    "start": "node dist/main.js",
+    "admin:create": "tsx apps/api/src/cli.ts admin:create",
+    "demo:seed": "tsx apps/api/src/cli.ts demo:seed",
+    "backup": "tsx apps/api/src/cli.ts backup",
+    "restore": "tsx apps/api/src/cli.ts restore",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^8.2.0",
+    "@fastify/swagger": "^9.5.1",
+    "@fastify/swagger-ui": "^5.2.3",
+    "argon2": "^0.44.0",
+    "fastify": "^5.6.2",
+    "ipaddr.js": "^2.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "esbuild": "^0.25.12",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.3",
+    "vite": "^7.2.2",
+    "vitest": "^3.2.4",
+    "yaml": "^2.8.1"
+  }
+}

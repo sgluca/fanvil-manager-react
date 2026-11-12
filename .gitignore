@@ -1,0 +1,10 @@
+node_modules/
+dist/
+apps/web/dist/
+data/
+.env
+*.sqlite*
+*.zip
+playwright-report/
+test-results/
+coverage/

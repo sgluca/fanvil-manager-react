@@ -1,0 +1,16 @@
+import { z } from 'zod';
+const scalar=z.union([z.string(),z.number()]);
+const envelope=z.object({code:scalar.refine(v=>String(v)==='200','Codice applicativo Fanvil non valido')});
+export const deviceInfoResponse=envelope.extend({type:z.object({item:z.literal('device_info'),cmd:z.literal('get')}),info:z.record(z.string(),scalar)});
+export function parseDeviceInfo(body:unknown){const result=deviceInfoResponse.safeParse(body);if(!result.success)return {recognized:false as const,reason:'Risposta non conforme al manuale 0.8.7'};const info=result.data.info;return {recognized:true as const,model:info['info.dev.Model']?.toString()??null,firmware:info['info.sys.FwVersion']?.toString()??null,uptime:info['info.sys.UpTime']?.toString()??null,physicalDoorState:'unknown',source:'manual-0.8.7',hardwareVerified:false};}
+export const cardsResponse=envelope.extend({card:z.array(z.object({name:z.string().default(''),cardNumber:z.string(),status:scalar.optional(),relay:scalar.optional(),period:z.union([z.string(),z.array(z.string())]).optional(),times:scalar.optional()})),total:scalar.optional()});
+export const pinsResponse=envelope.extend({password:z.array(z.object({name:z.string().default(''),password:z.string().optional(),refid:z.string().optional(),relay:scalar.optional(),status:scalar.optional()})),total:scalar.optional()});
+export const logResponse=envelope.extend({data:z.array(z.object({id:scalar,relay:scalar,openResult:scalar,openTime:scalar})),total:scalar.optional()});
+export function parseLogs(body:unknown){return logResponse.parse(body).data.map(r=>{const seconds=Number(r.openTime);if(!Number.isFinite(seconds)||seconds<0||seconds>4102444800)throw Error('Timestamp Fanvil non valido');return {remoteId:String(r.id),relayNumber:[1,2].includes(Number(r.relay))?Number(r.relay):null,occurredAt:new Date(seconds*1000).toISOString(),outcome:String(r.openResult)==='0'?'granted':String(r.openResult)==='1'?'denied':'unknown',personId:null};});}
+export function parseCredentials(body:unknown,kind:'rfid'|'pin'){
+ return kind==='rfid'?cardsResponse.parse(body).card.map(r=>({name:r.name,kind,value:r.cardNumber,remoteId:'card:'+r.cardNumber,readability:'readable'})):pinsResponse.parse(body).password.map(r=>({name:r.name,kind,value:r.password??null,remoteId:r.refid?'pin:'+r.refid:null,readability:r.password?'readable':'unrecoverable'}));
+}
+// Pure serializers only: no transport or production write capability is exposed.
+export function documentedCardAdd(v:{name:string;cardNumber:string;relay:'1'|'2'|'all'}){return {type:{cmd:'add'},card:[{...v,status:'enable'}]};}
+export function documentedPinAdd(v:{name:string;password:string;refid:string;relay:'1'|'2'|'all'}){return {type:{cmd:'add'},password:[{...v,type:'local',status:'enable',number:''}]};}
+export function documentedRelayOpen(relay:'1'|'2'){return {type:{cmd:'relayCtrl'},dooropen:{relay,action:'on',mode:'once'}};}

@@ -1,0 +1,114 @@
+import { randomUUID,createHash } from 'node:crypto';
+import { Store,now,type Row } from '../../../packages/database/src/index.ts';
+import { Secrets,masked,assertRealWriteBlocked } from '../../../packages/fanvil-core/src/index.ts';
+import { capabilitiesForModel } from '../../../packages/shared/src/index.ts';
+export function fail(message:string,statusCode=400):never{throw Object.assign(Error(message),{statusCode});}
+export function required(store:Store,table:string,id:string){const r=store.get(`SELECT * FROM ${table} WHERE id=?`,id);if(!r)fail('Elemento non trovato',404);return r;}
+export function insertDevice(s:Store,secrets:Secrets,v:Row){
+ const id=randomUUID();s.run('INSERT INTO devices(id,name,model,host,port,protocol,mode,approved,secret,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',id,v.name,v.model,v.host,v.port,v.protocol,v.mode,+v.approved,v.username||v.password?secrets.encrypt({username:v.username??'',password:v.password??''}):null,now());
+ for(let i=1;i<=(v.model==='i62'?2:1);i++)s.run('INSERT INTO relays(id,device_id,number,name) VALUES(?,?,?,?)',randomUUID(),id,i,'Relay '+i);
+ for(const c of capabilitiesForModel(v.mode,v.model))s.run('INSERT INTO device_capabilities VALUES(?,?,?,?,?)',id,c.key,c.state,c.reason,c.source);
+ if(v.mode==='demo')s.run('INSERT INTO mock_remote(device_id,data) VALUES(?,?)',id,secrets.encrypt([{remoteId:'demo-existing-001',name:'Custode demo',kind:'rfid',value:'DEMO-EXISTING-001',relayNumbers:[1]}]));
+ return id;
+}
+export function publicDevice(s:Store,r:Row){const {secret:_secret,...v}=r;return {...v,approved:!!v.approved,hasCredentials:!!r.secret,relays:s.all('SELECT * FROM relays WHERE device_id=? ORDER BY number',r.id),capabilities:s.all('SELECT * FROM device_capabilities WHERE device_id=?',r.id)};}
+export function publicCredential(r:Row){const {secret:_s,fingerprint:_f,...v}=r;return {...v,revoked:!!v.revoked};}
+export function remote(s:Store,secrets:Secrets,deviceId:string):Row[]{const r=s.get('SELECT data FROM mock_remote WHERE device_id=?',deviceId);return r?secrets.decrypt(r.data):[];}
+export function snapshot(s:Store,deviceId:string){return createHash('sha256').update(JSON.stringify({device:s.get('SELECT * FROM devices WHERE id=?',deviceId),credentials:s.all('SELECT id,person_id,fingerprint,readability,expires_at,revoked,revision FROM credentials ORDER BY id'),people:s.all('SELECT * FROM people ORDER BY id'),rules:s.all('SELECT * FROM access_rules ORDER BY id'),memberships:s.all('SELECT * FROM group_memberships ORDER BY group_id,person_id'),observed:s.all('SELECT * FROM device_credentials WHERE device_id=? ORDER BY id',deviceId),remote:s.get('SELECT * FROM mock_remote WHERE device_id=?',deviceId)})).digest('hex');}
+export function preview(s:Store,secrets:Secrets,deviceId:string,actor:string){
+ const device=required(s,'devices',deviceId),jobId=randomUUID();
+ s.transaction(()=>{
+  s.run('INSERT INTO sync_jobs VALUES(?,?,?,?,?,?)',jobId,deviceId,'preview',snapshot(s,deviceId),now(),null);
+  const desired=s.all(`SELECT DISTINCT c.* FROM credentials c JOIN people p ON p.id=c.person_id WHERE p.active=1 AND c.revoked=0 AND c.readability='readable' AND (c.expires_at IS NULL OR c.expires_at>?) AND EXISTS (SELECT 1 FROM access_rules r WHERE r.device_id=? AND (r.person_id=p.id OR r.group_id IN (SELECT group_id FROM group_memberships WHERE person_id=p.id)))`,now(),deviceId);
+  const known=s.all('SELECT * FROM device_credentials WHERE device_id=?',deviceId);
+  const existing=device.mode==='demo'?remote(s,secrets,deviceId):[];
+  for(const c of desired){
+   const mapping=known.find(k=>k.credential_id===c.id);const remoteId=mapping?.remote_id??'managed-'+c.id;
+   const relayNumbers=s.all(`SELECT DISTINCT l.number FROM access_rules r JOIN relays l ON l.id=r.relay_id WHERE r.device_id=? AND (r.person_id=? OR r.group_id IN(SELECT group_id FROM group_memberships WHERE person_id=?)) ORDER BY l.number`,deviceId,c.person_id,c.person_id).map(r=>r.number);
+   const value=secrets.decrypt<string>(c.secret);const old=existing.find(r=>r.remoteId===remoteId);
+   if(old&&old.kind===c.kind&&old.value===value&&JSON.stringify(old.relayNumbers)===JSON.stringify(relayNumbers))continue;
+   s.run('INSERT INTO sync_operations VALUES(?,?,?,?,?,?,?)',randomUUID(),jobId,c.id,remoteId,'upsert','pending',secrets.encrypt({remoteId,name:required(s,'people',c.person_id).name,kind:c.kind,value,relayNumbers}));
+  }
+  for(const k of known){
+   if(!k.credential_id)continue;
+   const c=required(s,'credentials',k.credential_id);
+   if(desired.some(v=>v.id===c.id))continue;
+   if(k.state!=='synced'&&!c.revoked)continue;
+   if(!existing.some(v=>v.remoteId===k.remote_id))continue;
+   s.run('INSERT INTO sync_operations VALUES(?,?,?,?,?,?,?)',randomUUID(),jobId,c.id,k.remote_id,'remove','pending',secrets.encrypt({remoteId:k.remote_id}));
+  }
+  s.audit(actor,'sync.preview',jobId,{deviceId,mode:device.mode});
+ });
+ return jobView(s,jobId);
+}
+export function jobView(s:Store,id:string){return {...required(s,'sync_jobs',id),operations:s.all('SELECT id,credential_id,remote_id,action,status FROM sync_operations WHERE job_id=?',id)};}
+export function apply(s:Store,secrets:Secrets,id:string,actor:string){
+ const job=required(s,'sync_jobs',id),device=required(s,'devices',job.device_id);
+ if(device.mode!=='demo')assertRealWriteBlocked();
+ if(job.status==='applied')return jobView(s,id);
+ if(!['preview','failed'].includes(job.status))fail('Anteprima non applicabile',409);
+ if(job.snapshot_hash!==snapshot(s,device.id)){
+  s.run("UPDATE sync_jobs SET status='conflict',error=? WHERE id=?",'Stato cambiato: rigenerare anteprima',id);s.audit(actor,'sync.conflict',id);fail('Stato cambiato: rigenerare anteprima',409);
+ }
+ s.transaction(()=>{
+  let data=remote(s,secrets,device.id);
+  for(const op of s.all('SELECT * FROM sync_operations WHERE job_id=?',id)){
+   data=data.filter(v=>v.remoteId!==op.remote_id);
+   if(op.action==='upsert')data.push(secrets.decrypt(op.payload));
+   s.run('INSERT INTO device_credentials VALUES(?,?,?,?,?,?) ON CONFLICT(device_id,remote_id) DO UPDATE SET credential_id=excluded.credential_id,state=excluded.state,observed_json=excluded.observed_json',randomUUID(),device.id,op.credential_id,op.remote_id,'synced',JSON.stringify({present:op.action==='upsert',source:'mock'}));
+   s.run("UPDATE sync_operations SET status='verified' WHERE id=?",op.id);
+  }
+  s.run('UPDATE mock_remote SET data=?,revision=revision+1 WHERE device_id=?',secrets.encrypt(data),device.id);
+  const readback=remote(s,secrets,device.id);
+  for(const op of s.all('SELECT * FROM sync_operations WHERE job_id=?',id)){
+   const actual=readback.find(v=>v.remoteId===op.remote_id);
+   if(op.action==='upsert'&&JSON.stringify(actual)!==JSON.stringify(secrets.decrypt(op.payload))||op.action==='remove'&&actual)fail('Verifica mock fallita',409);
+  }
+  s.run("UPDATE sync_jobs SET status='applied',error=NULL WHERE id=?",id);s.audit(actor,'sync.apply.demo',id,{operations:s.all('SELECT id FROM sync_operations WHERE job_id=?',id).length});
+ });return jobView(s,id);
+}
+export function stage(s:Store,secrets:Secrets,deviceId:string,actor:string){
+ const device=required(s,'devices',deviceId);if(device.mode!=='demo')fail('Import reale disabilitato: parser risposta non verificato',409);
+ const batchId=randomUUID();s.transaction(()=>{
+  s.run('INSERT INTO staging_batches VALUES(?,?,?,?)',batchId,deviceId,'pending',now());
+  for(const item of remote(s,secrets,deviceId))s.run('INSERT INTO staging_items VALUES(?,?,?,?,?,?,?,?,?)',randomUUID(),batchId,item.remoteId,item.name,item.kind,item.value?secrets.encrypt(item.value):null,item.value?secrets.fingerprint(item.kind,item.value):null,masked(item.kind,item.value),item.value?'readable':'unrecoverable');
+  s.audit(actor,'import.stage.demo',batchId,{deviceId});
+ });return batchView(s,batchId);
+}
+export function batchView(s:Store,id:string){const b=required(s,'staging_batches',id);return {...b,items:s.all('SELECT id,remote_id,name,credential_kind,masked,readability FROM staging_items WHERE batch_id=?',id).map(item=>({...item,existingPersonId:s.get('SELECT person_id FROM imported_people WHERE device_id=? AND remote_id=?',b.device_id,item.remote_id)?.person_id??s.get('SELECT person_id FROM credentials WHERE fingerprint=(SELECT fingerprint FROM staging_items WHERE id=?)',item.id)?.person_id??null,candidates:s.all('SELECT id,name FROM people WHERE name=?',item.name)}))};}
+export function reconcile(s:Store,batchId:string,mappings:Record<string,string>,actor:string){
+ const b=required(s,'staging_batches',batchId);if(b.status==='applied')return batchView(s,batchId);
+ s.transaction(()=>{
+  for(const i of s.all('SELECT * FROM staging_items WHERE batch_id=?',batchId)){
+   const imported=s.get('SELECT person_id FROM imported_people WHERE device_id=? AND remote_id=?',b.device_id,i.remote_id);
+   const credential=i.fingerprint?s.get('SELECT * FROM credentials WHERE fingerprint=?',i.fingerprint):undefined;
+   if(imported&&credential&&imported.person_id!==credential.person_id)fail('Identità remota e credenziale in conflitto',409);
+   const requested=mappings[i.id];if(requested)required(s,'people',requested);
+   if(credential&&requested&&requested!==credential.person_id)fail('Credenziale già associata: riconciliare manualmente',409);
+   if(imported&&requested&&requested!==imported.person_id)fail('Identità remota già riconciliata',409);
+   let personId=imported?.person_id??credential?.person_id??requested;
+   if(!personId){if(s.get('SELECT id FROM people WHERE name=?',i.name))fail('Nome già presente: scegliere la persona o creare una persona distinta e associarla',409);personId=randomUUID();s.run('INSERT INTO people VALUES(?,?,?,?,?,?)',personId,i.name,'Import demo',1,1,now());}
+   s.run('INSERT OR IGNORE INTO imported_people VALUES(?,?,?)',b.device_id,i.remote_id,personId);
+   let credentialId=credential?.id??s.get('SELECT credential_id FROM device_credentials WHERE device_id=? AND remote_id=?',b.device_id,i.remote_id)?.credential_id;
+   if(!credentialId&&i.credential_kind){credentialId=randomUUID();s.run('INSERT INTO credentials VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',credentialId,personId,i.credential_kind,i.secret,i.fingerprint,i.masked,i.readability,null,0,'import',1,now());}
+   s.run('INSERT INTO device_credentials VALUES(?,?,?,?,?,?) ON CONFLICT(device_id,remote_id) DO UPDATE SET credential_id=excluded.credential_id',randomUUID(),b.device_id,credentialId??null,i.remote_id,'observed',JSON.stringify({source:'mock',readability:i.readability}));
+  }
+  s.run("UPDATE staging_batches SET status='applied' WHERE id=?",batchId);s.audit(actor,'import.reconcile',batchId);
+ });return batchView(s,batchId);
+}
+export function collectEvents(s:Store,deviceId:string,actor:string){
+ const d=required(s,'devices',deviceId);if(d.mode!=='demo')fail('Parser eventi reale non verificato',409);
+ const relay=s.get('SELECT id FROM relays WHERE device_id=? ORDER BY number',deviceId)!;
+ for(let i=0;i<6;i++)s.run('INSERT OR IGNORE INTO access_events VALUES(?,?,?,?,?,?,?,?,?)',randomUUID(),deviceId,null,relay.id,'demo-event-'+i,new Date(Date.UTC(2026,10,12,8,i*5)).toISOString(),i===4?'denied':'granted','mock','mock:'+deviceId+':'+i);
+ s.audit(actor,'events.collect.demo',deviceId);return {count:s.get('SELECT COUNT(*) n FROM access_events WHERE device_id=?',deviceId)!.n};
+}
+export function seedDemo(s:Store,secrets:Secrets){
+ if(s.get("SELECT id FROM devices WHERE mode='demo'"))return;
+ s.transaction(()=>{
+  for(const [model,name] of [['i60K','Ingresso principale'],['i60','Sala incontri'],['A10','Segreteria'],['i62','Cortile e salone']]){
+   const id=insertDevice(s,secrets,{name,model,host:model.toLowerCase()+'.demo.invalid',port:80,protocol:'http',mode:'demo',approved:false});collectEvents(s,id,'system');
+  }
+  for(const name of ['Anna Demo','Marco Demo'])s.run('INSERT INTO people VALUES(?,?,?,?,?,?)',randomUUID(),name,'Dati sintetici',1,1,now());
+  s.run('INSERT INTO access_groups VALUES(?,?,?)',randomUUID(),'Volontari','Gruppo demo');s.audit(null,'demo.seed');
+ });
+}
