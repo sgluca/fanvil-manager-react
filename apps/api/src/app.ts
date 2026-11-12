@@ -21,6 +21,8 @@ import {
   Secrets,
   masked,
   FanvilHttpClient,
+  FanvilReadError,
+  safeReadError,
   metadata,
   normalizeDeviceInfo,
   assertRealWriteBlocked,
@@ -182,7 +184,10 @@ export async function buildApp(config: Config, existingStore?: Store) {
           : e.code?.includes("SQLITE")
             ? "Operazione in conflitto con i dati esistenti"
             : e.message;
-    return reply.code(status).send({ error: message });
+    return reply.code(status).send({
+      error: message,
+      ...(e instanceof FanvilReadError ? { code: e.code } : {}),
+    });
   });
   const admin = (req: FastifyRequest) => {
     if (req.user?.role !== "admin")
@@ -503,12 +508,30 @@ export async function buildApp(config: Config, existingStore?: Store) {
             parsed?.recognized ? parsed.firmware : null,
             key,
           );
-        } catch {
-          audit(req, "inspector.failed", key, { operation });
-          fail(
-            "Lettura non disponibile: controllare abilitazione, approvazione, LAN e connettività",
-            409,
-          );
+        } catch (error) {
+          const failure = safeReadError(error);
+          s.transaction(() => {
+            const metadata = {
+              source: "real",
+              success: false,
+              code: failure.code,
+              message: failure.message,
+              ...(failure.remoteStatus ? { status: failure.remoteStatus } : {}),
+            };
+            s.run(
+              "INSERT INTO diagnostics VALUES(?,?,?,?,?)",
+              randomUUID(),
+              key,
+              operation,
+              JSON.stringify(metadata),
+              now(),
+            );
+            audit(req, "inspector.failed", key, {
+              operation,
+              code: failure.code,
+            });
+          });
+          throw failure;
         }
       }
       s.transaction(() => {

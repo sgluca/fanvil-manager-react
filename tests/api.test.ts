@@ -498,6 +498,37 @@ describe("Flusso completo con SQLite e adapter mock", () => {
       (await app.inject({ url: "/api/people", headers: h })).statusCode,
     ).toBe(401);
   });
+  it("inspector comunica il blocco preciso e salva diagnostica sanitizzata senza contattare il dispositivo", async () => {
+    const d = (
+      await call("POST", "/devices", {
+        name: "Diagnostica read disabled",
+        model: "i60",
+        host: "never-contact.invalid",
+        mode: "real",
+        approved: true,
+        username: "synthetic-user",
+        password: "synthetic-secret-do-not-log",
+      })
+    ).json();
+    const r = await call("POST", "/devices/" + d.id + "/inspect", {
+      operation: "deviceInfo",
+    });
+    expect(r.statusCode).toBe(409);
+    expect(r.json().code).toBe("FANVIL_READ_DISABLED");
+    expect(r.json().error).toContain("FANVIL_READ_ENABLED=true");
+    const diagnostics = (
+      await call("GET", "/devices/" + d.id + "/diagnostics")
+    ).json();
+    expect(diagnostics[0].metadata.code).toBe("FANVIL_READ_DISABLED");
+    expect(JSON.stringify(diagnostics)).not.toContain(
+      "synthetic-secret-do-not-log",
+    );
+    expect(
+      JSON.stringify(
+        s.all("SELECT * FROM audit_logs WHERE action='inspector.failed'"),
+      ),
+    ).not.toContain("synthetic-secret-do-not-log");
+  });
   it("OpenAPI contiene le operazioni protette e schemi", async () => {
     const r = await call("GET", "/docs/json");
     expect(r.statusCode).toBe(200);

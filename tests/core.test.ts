@@ -104,6 +104,27 @@ describe("Sicurezza e contratto manuale", () => {
     ).rejects.toThrow("approvati");
     expect(() => assertRealWriteBlocked()).toThrow();
   });
+  it("distingue approvazione e LAN mancante prima di qualsiasi richiesta di rete", async () => {
+    const client = new FanvilHttpClient({
+      enabled: true,
+      cidrs: [],
+      timeoutMs: 100,
+    });
+    const target = {
+      host: "never-contact.invalid",
+      port: 80,
+      protocol: "http" as const,
+      approved: false,
+      username: "u",
+      password: "s",
+    };
+    await expect(client.read(target, "deviceInfo")).rejects.toMatchObject({
+      code: "FANVIL_NOT_APPROVED",
+    });
+    await expect(
+      client.read({ ...target, approved: true }, "deviceInfo"),
+    ).rejects.toMatchObject({ code: "FANVIL_LAN_NOT_CONFIGURED" });
+  });
   it("normalizza solo risposte conformi, senza confondere lock e porta fisica", () => {
     expect(normalizeDeviceInfo({})).toMatchObject({ recognized: false });
     expect(

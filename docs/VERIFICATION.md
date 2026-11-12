@@ -47,3 +47,9 @@ Compose è analizzabile anche senza le tre variabili sensibili/obbligatorie nell
 Il comando `node dist/cli.js admin:create amministratore` accetta input interattivo nascosto sul TTY e continua a supportare stdin per automazione. Verifica manuale su pseudo-terminale: prompt visibile, password sintetica non mostrata e account creato.
 
 Quattro test aggiuntivi verificano lock condivisi/esclusivi, singola istanza, creazione account con app avviata da un processo separato, hash password, duplicati, input non valido e rollback in caso di errore audit. Totale aggiornato: 41 test in 5 suite. Il test Compose crea ora l'amministratore con `docker compose exec` mentre il servizio è già attivo, prima di verificare login, persistenza dopo crash e backup/ripristino.
+
+## Diagnostica delle letture Fanvil
+
+L’Inspector restituisce codici e messaggi specifici per i blocchi di configurazione e gli errori del trasporto. Anche i tentativi falliti producono uno storico diagnostico sanitizzato e audit con codice errore. Le risposte 401 con challenge Digest vengono segnalate come autenticazione non ancora supportata, senza salvare header o body del dispositivo. Gli spazi tra reti CIDR vengono normalizzati.
+
+Quattro test aggiuntivi coprono flag, approvazione e LAN mancante senza rete, CIDR con spazi, Basic/Digest e risposte non JSON su server locale, propagazione del codice errore e assenza di segreti in audit/diagnostica. Totale aggiornato: 45 test in 5 suite. Nessuna richiesta eseguita sui citofoni reali.

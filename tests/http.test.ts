@@ -23,6 +23,21 @@ const server = createServer(async (req: IncomingMessage, res) => {
     res.writeHead(302, { location: "http://127.0.0.1/forbidden" }).end();
     return;
   }
+  if (behavior === "auth" || behavior === "digest") {
+    res
+      .writeHead(401, {
+        "www-authenticate":
+          behavior === "digest"
+            ? 'Digest realm="synthetic-sensitive", nonce="synthetic-token"'
+            : 'Basic realm="synthetic-sensitive"',
+      })
+      .end("sensitive-body");
+    return;
+  }
+  if (behavior === "html") {
+    res.end("<html>sensitive-response</html>");
+    return;
+  }
   if (behavior === "large") {
     res.end(JSON.stringify({ large: "x".repeat(4096) }));
     return;
@@ -117,6 +132,29 @@ describe("Trasporto su server locale, nessun dispositivo reale", () => {
     await expect(first).rejects.toThrow("Connessione");
     behavior = "ok";
     expect((await client.read(target, "deviceInfo")).status).toBe(200);
+  });
+  it("distingue autenticazione Basic/Digest e risposta non JSON senza esporre risposte o challenge", async () => {
+    behavior = "auth";
+    await expect(client.read(target, "deviceInfo")).rejects.toMatchObject({
+      code: "FANVIL_AUTH",
+      remoteStatus: 401,
+    });
+    behavior = "digest";
+    let error: any;
+    try {
+      await client.read(target, "deviceInfo");
+    } catch (e) {
+      error = e;
+    }
+    expect(error.code).toBe("FANVIL_AUTH");
+    expect(error.message).toContain("Digest");
+    expect(error.message).not.toContain("synthetic-sensitive");
+    expect(error.message).not.toContain("synthetic-token");
+    behavior = "html";
+    await expect(client.read(target, "deviceInfo")).rejects.toMatchObject({
+      code: "FANVIL_RESPONSE_FORMAT",
+    });
+    behavior = "ok";
   });
   it("protegge IP risolto e operazioni arbitrarie", async () => {
     await expect(

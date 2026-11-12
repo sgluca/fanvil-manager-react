@@ -71,8 +71,9 @@ Su un host Docker configurato, dopo aver preparato `.env`, l’avvio standard è
 La release non effettua discovery automatica né scansioni. Il client è configurabile, ma non è stato provato sui tuoi dispositivi.
 
 - `FANVIL_READ_ENABLED=true` abilita solo le letture esplicite dell’Inspector.
-- `FANVIL_ALLOWED_CIDRS` è una lista di reti LAN autorizzate separata da virgole. Lasciarla vuota blocca tutte le destinazioni reali. La registrazione deve essere approvata da un admin.
+- `FANVIL_ALLOWED_CIDRS` è una lista di reti LAN autorizzate separata da virgole. Lasciarla vuota blocca tutte le destinazioni reali. La registrazione deve essere approvata da un admin. Per autorizzare un solo citofono, usare il suo IP con `/32`: ad esempio `192.168.1.50/32`. Per due dispositivi: `192.168.1.50/32,192.168.1.51/32`. Per un’intera sottorete, ad esempio `192.168.1.0/24`. Questi sono esempi: sostituire gli indirizzi con quelli effettivi. La variabile limita le connessioni in uscita verso i citofoni.
 - Sono esclusi loopback, link-local/metadata, multicast e IP pubblici. Tutti gli IP risolti devono essere autorizzati; la connessione usa un indirizzo già validato per evitare DNS rebinding. Redirect sempre bloccati.
+- Nel portale, come admin: **Dispositivi → Modifica → Approva dispositivo per letture nella LAN autorizzata**, poi salva. Dopo modifiche alle variabili Coolify fare Redeploy; riprovare **Test connessione / Inspector**.
 - `FANVIL_TIMEOUT_MS` (100–60000, default 5000); massimo due richieste concorrenti e 1 MiB per risposta. Letture per indice limitate alla prima pagina 1–100, non un inventario completo.
 - Autenticazione **Basic** confermata dalla collezione; il manuale menziona anche Digest. Digest non è implementata: una risposta 401 richiede diagnosi e non provoca fallback automatici.
 - TLS verificato per HTTPS. Se il dispositivo usa solo HTTP, Basic e payload attraversano la LAN in chiaro: segmentare la rete e limitarne l’accesso.
@@ -116,3 +117,5 @@ In ambienti con proxy TLS ispettivo la build accetta opzionalmente `--secret id=
 Documentazione: [matrice API](docs/FANVIL_API_MATRIX.md), [modello dati](docs/DATA_MODEL.md), [sicurezza](docs/SECURITY.md), [limitazioni](docs/LIMITATIONS.md), [verifica](docs/VERIFICATION.md).
 
 Il test Docker usa un progetto Compose e un volume temporanei distinti; verifica UID 1000, healthcheck, persistenza dopo SIGKILL e backup/ripristino, poi elimina solo le proprie risorse.
+
+L’Inspector distingue ora letture disabilitate, dispositivo non approvato, LAN mancante/non autorizzata, DNS, timeout, autenticazione, redirect, TLS e formato risposta. Il codice errore e i metadati sanitizzati sono consultabili nello storico diagnostica; nessun header di autenticazione o body remoto viene conservato.

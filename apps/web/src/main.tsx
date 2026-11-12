@@ -586,7 +586,11 @@ function App() {
           </span>
           <div className="top-actions">
             <Badge tone={session.demo ? "amber" : "green"}>
-              {session.demo ? "AMBIENTE DEMO" : "AMBIENTE LOCALE"}
+              {session.demo
+                ? session.realRead
+                  ? "DEMO + LETTURE REALI"
+                  : "AMBIENTE DEMO"
+                : "AMBIENTE LOCALE"}
             </Badge>
             <span className="top-date">Europe/Rome</span>
           </div>
@@ -700,13 +704,18 @@ function App() {
             <div className="demo-banner">
               <span>◉</span>
               <div>
-                <strong>Modalità demo</strong>{" "}
+                <strong>
+                  {session.realRead ? "Dati demo abilitati" : "Modalità demo"}
+                </strong>{" "}
                 <span>
-                  Dati sintetici e operazioni simulate. Nessuna connessione ai
-                  citofoni.
+                  {session.realRead
+                    ? "Le letture dei dispositivi reali richiedono approvazione e rete autorizzata. I dispositivi demo restano simulati."
+                    : "Dati sintetici e operazioni simulate. Nessuna connessione ai citofoni."}
                 </span>
               </div>
-              <Badge tone="amber">MOCK ADAPTER</Badge>
+              <Badge tone="amber">
+                {session.realRead ? "MODALITÀ MISTA" : "MOCK ADAPTER"}
+              </Badge>
             </div>
           )}
           {error && (

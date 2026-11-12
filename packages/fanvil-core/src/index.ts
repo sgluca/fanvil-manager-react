@@ -1,3 +1,4 @@
+import { FanvilReadError, httpReadError, safeReadError } from "./errors.ts";
 import { parseDeviceInfo } from "./manual.ts";
 import {
   createCipheriv,
@@ -170,9 +171,16 @@ export class FanvilHttpClient {
     target: Target,
     operation: ReadOperation,
   ): Promise<{ status: number; body: unknown }> {
-    if (!this.options.enabled) throw Error("Letture reali disabilitate");
+    if (!this.options.enabled)
+      throw new FanvilReadError(
+        "FANVIL_READ_DISABLED",
+        "Letture reali disabilitate: impostare FANVIL_READ_ENABLED=true a runtime e ridistribuire il servizio",
+      );
     if (!target.approved || !Object.hasOwn(readRequests, operation))
-      throw Error("Dispositivo o operazione non approvati");
+      throw new FanvilReadError(
+        "FANVIL_NOT_APPROVED",
+        "Dispositivo o operazione non approvati: abilitare l’approvazione per le letture nel dispositivo",
+      );
     if (
       !/^[a-zA-Z0-9.-]{1,253}$/.test(target.host) ||
       !Number.isInteger(target.port) ||
@@ -180,26 +188,52 @@ export class FanvilHttpClient {
       target.port > 65535 ||
       !["http", "https"].includes(target.protocol)
     )
-      throw Error("Destinazione non valida");
+      throw new FanvilReadError(
+        "FANVIL_TARGET",
+        "Destinazione non valida: inserire solo IP o hostname, con protocollo e porta nei rispettivi campi",
+      );
     if (this.active >= (this.options.concurrency ?? 2))
-      throw Error("Limite concorrenza raggiunto");
+      throw new FanvilReadError(
+        "FANVIL_BUSY",
+        "Limite concorrenza raggiunto: attendere il termine delle letture in corso",
+      );
+    if (!this.options.cidrs.length)
+      throw new FanvilReadError(
+        "FANVIL_LAN_NOT_CONFIGURED",
+        "LAN non configurata: impostare FANVIL_ALLOWED_CIDRS con la rete autorizzata o il singolo IP /32",
+      );
     this.active++;
     try {
       const addresses = await Promise.race([
         lookup(target.host, { all: true }),
         new Promise<never>((_, reject) => {
           const timer = setTimeout(
-            () => reject(Error("Timeout DNS")),
+            () =>
+              reject(
+                new FanvilReadError(
+                  "FANVIL_DNS_TIMEOUT",
+                  "Timeout DNS: usare un IP LAN o verificare il DNS del container",
+                ),
+              ),
             this.options.timeoutMs,
           );
           timer.unref();
         }),
-      ]);
+      ]).catch((error) => {
+        if (error instanceof FanvilReadError) throw error;
+        throw new FanvilReadError(
+          "FANVIL_DNS",
+          "Nome dispositivo non risolto: verificare hostname e DNS del container",
+        );
+      });
       if (
         !addresses.length ||
         addresses.some((a) => !addressAllowed(a.address, this.options.cidrs))
       )
-        throw Error("Indirizzo fuori dalla LAN autorizzata");
+        throw new FanvilReadError(
+          "FANVIL_LAN_DENIED",
+          "Indirizzo fuori dalla LAN autorizzata: verificare FANVIL_ALLOWED_CIDRS; sono esclusi IP pubblici, loopback e link-local",
+        );
       const address = addresses[0];
       const spec = readRequests[operation];
       const body = "body" in spec ? JSON.stringify(spec.body) : undefined;
@@ -221,7 +255,12 @@ export class FanvilHttpClient {
           (res) => {
             if ((res.statusCode ?? 500) >= 300) {
               res.resume();
-              reject(Error("Risposta HTTP non valida: " + res.statusCode));
+              reject(
+                httpReadError(
+                  res.statusCode ?? 500,
+                  String(res.headers["www-authenticate"] ?? ""),
+                ),
+              );
               return;
             }
             const chunks: Buffer[] = [];
@@ -229,7 +268,12 @@ export class FanvilHttpClient {
             res.on("data", (chunk: Buffer) => {
               size += chunk.length;
               if (size > (this.options.maxBytes ?? 1_048_576)) {
-                reject(Error("Risposta troppo grande"));
+                reject(
+                  new FanvilReadError(
+                    "FANVIL_RESPONSE_SIZE",
+                    "Risposta troppo grande: superato il limite della diagnostica",
+                  ),
+                );
                 req.destroy();
                 res.destroy();
               } else chunks.push(chunk);
@@ -242,19 +286,54 @@ export class FanvilHttpClient {
                   body: raw ? JSON.parse(raw) : null,
                 });
               } catch {
-                reject(Error("Risposta JSON non valida"));
+                reject(
+                  new FanvilReadError(
+                    "FANVIL_RESPONSE_FORMAT",
+                    "Risposta JSON non valida: l’endpoint potrebbe restituire HTML o non essere supportato dal firmware",
+                  ),
+                );
               }
             });
-            res.on("error", () => reject(Error("Lettura risposta interrotta")));
+            res.on("error", () =>
+              reject(
+                new FanvilReadError(
+                  "FANVIL_CONNECTION",
+                  "Lettura risposta interrotta dal dispositivo",
+                ),
+              ),
+            );
           },
         );
         const timer = setTimeout(
-          () => req.destroy(Error("Timeout Fanvil")),
+          () =>
+            req.destroy(
+              new FanvilReadError(
+                "FANVIL_TIMEOUT",
+                "Connessione Fanvil: timeout; verificare rete del container, firewall, protocollo e porta",
+              ),
+            ),
           this.options.timeoutMs,
         );
         timer.unref();
         req.on("close", () => clearTimeout(timer));
-        req.on("error", () => reject(Error("Connessione Fanvil fallita")));
+        req.on("error", (error: NodeJS.ErrnoException) => {
+          if (
+            [
+              "CERT_HAS_EXPIRED",
+              "DEPTH_ZERO_SELF_SIGNED_CERT",
+              "ERR_TLS_CERT_ALTNAME_INVALID",
+              "SELF_SIGNED_CERT_IN_CHAIN",
+              "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+            ].includes(error.code ?? "")
+          )
+            reject(
+              new FanvilReadError(
+                "FANVIL_TLS",
+                "Certificato HTTPS non valido o non attendibile: configurare un certificato e una CA validi",
+              ),
+            );
+          else reject(safeReadError(error));
+        });
         if (body) req.write(body);
         req.end();
       });
@@ -269,3 +348,5 @@ export function assertRealWriteBlocked(): never {
     { statusCode: 409 },
   );
 }
+
+export { FanvilReadError, safeReadError } from "./errors.ts";

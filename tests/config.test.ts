@@ -24,6 +24,14 @@ describe("Validazione runtime indipendente dalla build Compose", () => {
     vi.stubEnv("PUBLIC_ORIGIN", "http://fanvil.test.invalid");
     expect(() => configFromEnv()).toThrow("HTTPS");
   });
+  it("normalizza gli spazi tra reti CIDR nella configurazione", () => {
+    production();
+    vi.stubEnv("FANVIL_ALLOWED_CIDRS", " 192.168.42.9/32, 192.168.43.0/24 , ");
+    expect(configFromEnv().cidrs).toEqual([
+      "192.168.42.9/32",
+      "192.168.43.0/24",
+    ]);
+  });
   it("accetta configurazione di produzione completa senza attivare scritture reali", () => {
     production();
     vi.stubEnv("FANVIL_READ_ENABLED", "false");

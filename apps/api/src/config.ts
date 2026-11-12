@@ -42,7 +42,10 @@ export function configFromEnv(): Config {
     origin,
     demo: process.env.DEMO_MODE === "true",
     realRead: process.env.FANVIL_READ_ENABLED === "true",
-    cidrs: (process.env.FANVIL_ALLOWED_CIDRS ?? "").split(",").filter(Boolean),
+    cidrs: (process.env.FANVIL_ALLOWED_CIDRS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
     timeoutMs,
     retentionDays,
     webRoot: resolve("apps/web/dist"),
