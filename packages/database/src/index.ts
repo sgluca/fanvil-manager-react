@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS sync_operations(id TEXT PRIMARY KEY,job_id TEXT NOT N
 CREATE TABLE IF NOT EXISTS staging_batches(id TEXT PRIMARY KEY,device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,status TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS staging_items(id TEXT PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES staging_batches(id) ON DELETE CASCADE,remote_id TEXT NOT NULL,name TEXT NOT NULL,credential_kind TEXT,secret TEXT,fingerprint TEXT,masked TEXT,readability TEXT NOT NULL,UNIQUE(batch_id,remote_id));
 CREATE TABLE IF NOT EXISTS imported_people(device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,remote_id TEXT NOT NULL,person_id TEXT NOT NULL REFERENCES people(id),PRIMARY KEY(device_id,remote_id));
+CREATE TABLE IF NOT EXISTS device_groups(device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,group_id TEXT NOT NULL REFERENCES access_groups(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS mock_remote(device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,revision INTEGER NOT NULL DEFAULT 1,data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS diagnostics(id TEXT PRIMARY KEY,device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,endpoint TEXT NOT NULL,metadata TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit_logs(id TEXT PRIMARY KEY,actor_id TEXT,action TEXT NOT NULL,entity_id TEXT,metadata TEXT NOT NULL,created_at TEXT NOT NULL);

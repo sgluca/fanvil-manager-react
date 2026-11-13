@@ -55,6 +55,9 @@ import {
   batchView,
   reconcile,
   collectEvents,
+  observedGroup,
+  startCardCapture,
+  pollCardCapture,
   seedDemo,
   type DeviceReader,
   jobView,
@@ -408,6 +411,15 @@ export async function buildApp(config: Config, existingStore?: Store) {
       const key = getId(req);
       required(s, "devices", key);
       s.transaction(() => {
+        // The generated "access observed" group is derived from this device: it goes with it.
+        const g = s.get(
+          "SELECT group_id FROM device_groups WHERE device_id=?",
+          key,
+        );
+        if (g) {
+          s.run("DELETE FROM access_rules WHERE group_id=?", g.group_id);
+          s.run("DELETE FROM access_groups WHERE id=?", g.group_id);
+        }
         s.run("DELETE FROM devices WHERE id=?", key);
         audit(req, "device.delete.local", key);
       });
@@ -895,6 +907,50 @@ export async function buildApp(config: Config, existingStore?: Store) {
         reconciliationSchema.parse(req.body).mappings,
         req.user!.id,
       ),
+  );
+  route(
+    "POST",
+    "/api/devices/:id/observed-group",
+    "Genera il gruppo degli accessi rilevati sul dispositivo",
+    confirmSchema,
+    (req) => {
+      const d = required(s, "devices", getId(req));
+      return s.transaction(() => observedGroup(s, d.id, req.user!.id));
+    },
+  );
+  route(
+    "POST",
+    "/api/devices/:id/card-capture",
+    "Avvia lettura nuova tessera dal log aperture (sola lettura)",
+    confirmSchema,
+    async (req) => {
+      const d = required(s, "devices", getId(req));
+      if (d.mode !== "demo") admin(req);
+      return startCardCapture(
+        s,
+        secrets,
+        d.id,
+        req.user!.id,
+        d.mode === "demo" ? undefined : deviceReader(req, d),
+      );
+    },
+  );
+  route(
+    "POST",
+    "/api/devices/:id/card-capture/:captureId",
+    "Rileva tessere passate dopo l’avvio della lettura",
+    confirmSchema,
+    async (req) => {
+      const d = required(s, "devices", getId(req));
+      if (d.mode !== "demo") admin(req);
+      return pollCardCapture(
+        s,
+        secrets,
+        id.parse((req.params as any).captureId),
+        req.user!.id,
+        d.mode === "demo" ? undefined : deviceReader(req, d),
+      );
+    },
   );
   route(
     "POST",
