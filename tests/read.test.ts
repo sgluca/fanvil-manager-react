@@ -682,6 +682,42 @@ describe("Lettura nuova tessera dal log", () => {
     expect(JSON.stringify(r.unrecognized)).not.toContain("999999");
     expect(calls.every((c) => c === "eventsRead")).toBe(true);
   });
+  it("con indice ignorato trova la tessera nuova tramite intervallo di date", async () => {
+    const s = new Store(":memory:");
+    const deviceId = realDevice(s, "i60K");
+    const old = Math.floor(Date.now() / 1000) - 86400 * 300;
+    const logs: any[] = Array.from({ length: 150 }, (_, i) => ({
+      relay: 1,
+      openResult: 0,
+      openTime: old + i * 60,
+    }));
+    // Always the oldest 100 entries; the datetime range is honored (local time).
+    const reader: DeviceReader = async (_op, _page, o) => {
+      const from = o?.datetime?.split("-")[0];
+      const data = logs
+        .filter(
+          (l) => !from || deviceDateTime(new Date(l.openTime * 1000)) >= from,
+        )
+        .slice(0, 100)
+        .map((l, i) => ({ id: i + 1, ...l }));
+      return { status: 200, body: { code: "200", data, total: "100" } };
+    };
+    const start = await startCardCapture(s, secrets, deviceId, "admin", reader);
+    logs.push({
+      relay: 1,
+      openResult: 1,
+      openTime: Math.floor(Date.now() / 1000),
+      extra: "C:66667777",
+    });
+    const r = await pollCardCapture(
+      s,
+      secrets,
+      start.captureId,
+      "admin",
+      reader,
+    );
+    expect(r.cards.map((c) => c.value)).toEqual(["66667777"]);
+  });
   it("riconosce la tessera nuova anche se l'id del log è la posizione nella finestra", async () => {
     const s = new Store(":memory:");
     const deviceId = realDevice(s, "i60K");

@@ -699,30 +699,76 @@ const captures = new Map<
   { deviceId: string; baseline: Set<string>; startedAt: number; demo: boolean }
 >();
 const CAPTURE_TTL = 10 * 60_000;
-async function readLogCards(secrets: Secrets, reader: DeviceReader) {
-  const log = await readAllPages(
-    (page) =>
-      reader("eventsRead", page).then((r) =>
-        parsed("device_log", r.body, () => parseLogCardsPage(r.body)),
-      ),
-    200,
-    true,
-  );
-  const seen = new Map<string, number>();
-  const keys = log.items.map((e) => {
-    const base = [
-      e.occurredAt,
-      e.relayNumber ?? 0,
-      e.outcome,
-      e.card
-        ? secrets.fingerprint("rfid", e.card).slice(0, 32)
-        : (e.extraShape ?? ""),
-    ].join("|");
-    const n = (seen.get(base) ?? 0) + 1;
-    seen.set(base, n);
-    return base + "#" + n;
-  });
-  return { ...log, keys };
+async function readLogCards(
+  secrets: Secrets,
+  reader: DeviceReader,
+  since: number,
+) {
+  const fetchPage = (page: number, datetime?: string) =>
+    reader("eventsRead", page, datetime ? { datetime } : undefined).then((r) =>
+      parsed("device_log", r.body, () => parseLogCardsPage(r.body)),
+    );
+  const log = await readAllPages((page) => fetchPage(page), 200, true);
+  type Entry = (typeof log.items)[number];
+  const keyed = (items: Entry[]) => {
+    const seen = new Map<string, number>();
+    return items.map((e) => {
+      const base = [
+        e.occurredAt,
+        e.relayNumber ?? 0,
+        e.outcome,
+        e.card
+          ? secrets.fingerprint("rfid", e.card).slice(0, 32)
+          : (e.extraShape ?? ""),
+      ].join("|");
+      const n = (seen.get(base) ?? 0) + 1;
+      seen.set(base, n);
+      return { e, key: base + "#" + n };
+    });
+  };
+  const byKey = new Map(keyed(log.items).map((x) => [x.key, x.e]));
+  let complete = log.complete;
+  // Firmware that ignores the index answers with the oldest page only: read the recent part
+  // of the log with the documented datetime range, from a fixed point before the capture
+  // started (same start for baseline and polls, so keys stay comparable).
+  if (log.items.length && log.items.length % PAGE_SIZE === 0) {
+    const end = deviceDateTime(new Date(Date.now() + 86400000));
+    let cursor = deviceDateTime(new Date(since - 2 * 3600000));
+    const recent: Entry[] = [];
+    complete = false;
+    for (let w = 0; w < 50; w++) {
+      let page: Awaited<ReturnType<typeof fetchPage>>;
+      try {
+        page = await fetchPage(1, cursor + "-" + end);
+      } catch (error) {
+        if (w === 0) break;
+        throw error;
+      }
+      if (
+        w === 0 &&
+        page.items.length >= PAGE_SIZE &&
+        JSON.stringify(page.items[0]) === JSON.stringify(log.items[0])
+      )
+        break; // datetime ignored
+      const last = recent.at(-1)?.occurredAt ?? "";
+      const fresh = page.items.filter(
+        (e) => !recent.length || (e.occurredAt ?? "") > last,
+      );
+      recent.push(...fresh);
+      const newest = recent.at(-1)?.occurredAt;
+      if (page.items.length < PAGE_SIZE || !fresh.length || !newest) {
+        complete = true;
+        break;
+      }
+      cursor = deviceDateTime(new Date(newest));
+    }
+    for (const x of keyed(recent)) byKey.set(x.key, x.e);
+  }
+  return {
+    items: [...byKey.values()],
+    keys: [...byKey.keys()],
+    complete,
+  };
 }
 export async function startCardCapture(
   s: Store,
@@ -734,11 +780,12 @@ export async function startCardCapture(
   const d = required(s, "devices", deviceId);
   for (const [k, v] of captures)
     if (Date.now() - v.startedAt > CAPTURE_TTL) captures.delete(k);
+  const startedAt = Date.now();
   let baseline = new Set<string>(),
     complete = true;
   if (d.mode !== "demo") {
     if (!reader) fail("Lettura reale non disponibile", 409);
-    const log = await readLogCards(secrets, reader);
+    const log = await readLogCards(secrets, reader, startedAt);
     baseline = new Set(log.keys);
     complete = log.complete;
   }
@@ -746,7 +793,7 @@ export async function startCardCapture(
   captures.set(captureId, {
     deviceId,
     baseline,
-    startedAt: Date.now(),
+    startedAt,
     demo: d.mode === "demo",
   });
   s.audit(actor, "card.capture.start", deviceId, { logEntries: baseline.size });
@@ -781,7 +828,7 @@ export async function pollCardCapture(
         : [];
   } else {
     if (!reader) fail("Lettura reale non disponibile", 409);
-    const log = await readLogCards(secrets, reader);
+    const log = await readLogCards(secrets, reader, c.startedAt);
     entries = log.items.filter((_, i) => !c.baseline.has(log.keys[i]));
     complete = log.complete;
   }
