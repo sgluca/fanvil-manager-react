@@ -1321,3 +1321,59 @@ dialog::backdrop {
 .profile {
   background: var(--navy);
 }
+.access-editor fieldset {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.access-editor legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  padding: 0 6px;
+}
+.access-editor legend span {
+  display: flex;
+  gap: 6px;
+}
+.access-editor legend button {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.access-editor .check-label {
+  display: flex;
+  flex-wrap: wrap;
+}
+.access-editor .check-label small {
+  font-size: 11px;
+}
+.access-device-name {
+  font-weight: 600;
+}
+.access-relay {
+  margin-left: 24px;
+}
+.access-people {
+  max-height: 260px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.access-summary {
+  font-size: 12px;
+  margin: 0 0 6px;
+}
+.group-opens {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 10px;
+}
