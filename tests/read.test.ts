@@ -6,6 +6,7 @@ import {
   PAGE_SIZE,
   readAllPages,
   readSpec,
+  deviceDateTime,
 } from "../packages/fanvil-core/src/index.ts";
 import {
   insertDevice,
@@ -61,6 +62,20 @@ describe("Lettura paginata", () => {
     expect(readSpec("cardsRead", 1).body.card.index).toBe("1-100");
     expect(readSpec("cardsRead", 3).body.card.index).toBe("201-300");
     expect(readSpec("eventsRead", 2).body.deviceLog.index).toBe("101-200");
+    expect(
+      readSpec("eventsRead", 1, {
+        datetime: "2026.03.29 10:00:00-2026.11.14 10:00:00",
+      }).body.deviceLog,
+    ).toEqual({
+      index: "1-100",
+      datetime: "2026.03.29 10:00:00-2026.11.14 10:00:00",
+    });
+    expect(() =>
+      readSpec("eventsRead", 1, { datetime: "2026-03-29" }),
+    ).toThrow();
+    expect(deviceDateTime(new Date("2026-07-01T10:00:00Z"))).toBe(
+      "2026.07.01 12:00:00",
+    );
     expect(readSpec("cardsRead", 2).body.type).toEqual({
       cmd: "get",
       condition: "index",
@@ -360,6 +375,83 @@ describe("Eventi reali", () => {
       { retentionDays: 90 },
     );
     expect(r).toMatchObject({ read: 2, added: 0, expired: 1, count: 1 });
+  });
+  // Firmware that ignores the index window and always answers with the first 100 events
+  // (oldest first), optionally honoring the documented datetime range in local time.
+  const firstPageOnly =
+    (logs: () => any[], range: "honor" | "ignore" | "reject"): DeviceReader =>
+    async (_op, _page, options) => {
+      if (options?.datetime && range === "reject") throw new Error("400");
+      const from =
+        options?.datetime && range === "honor"
+          ? options.datetime.split("-")[0]
+          : null;
+      const data = logs()
+        .filter(
+          (l) =>
+            !from ||
+            deviceDateTime(new Date(Number(l.openTime) * 1000)) >= from,
+        )
+        .slice(0, PAGE_SIZE)
+        .map((l, i) => ({ ...l, id: String(i + 1) }));
+      return { status: 200, body: { code: "200", data, total: "100" } };
+    };
+  it("con indice ignorato percorre il log per intervallo di date", async () => {
+    const s = new Store(":memory:");
+    const id = realDevice(s);
+    const base = Math.floor(Date.now() / 1000) - 86400 * 20;
+    let logs = Array.from({ length: 350 }, (_, i) => ({
+      relay: "1",
+      openResult: "0",
+      // Three identical events in the same second across the first page boundary.
+      openTime: String(base + (i >= 99 && i <= 101 ? 99 : i) * 600),
+    }));
+    let calls = 0;
+    const inner = firstPageOnly(() => logs, "honor");
+    const reader: DeviceReader = (op, page, o) => {
+      calls++;
+      return inner(op, page, o);
+    };
+    expect(await collectEvents(s, id, "actor", reader)).toMatchObject({
+      read: 350,
+      added: 350,
+      complete: true,
+      datetimeUnsupported: false,
+    });
+    logs = [
+      ...logs,
+      { relay: "2", openResult: "1", openTime: String(base + 400 * 600) },
+    ];
+    calls = 0;
+    expect(await collectEvents(s, id, "actor", reader)).toMatchObject({
+      added: 1,
+      complete: true,
+    });
+    // Incremental: the walk restarts from the newest stored event, not from the beginning.
+    expect(calls).toBeLessThan(6);
+    expect(
+      s.get("SELECT COUNT(*) n FROM access_events WHERE device_id=?", id)!.n,
+    ).toBe(351);
+  });
+  it("segnala lettura incompleta se il filtro per data è ignorato o rifiutato", async () => {
+    const logs = Array.from({ length: 250 }, (_, i) => log(i));
+    for (const range of ["ignore", "reject"] as const) {
+      const s = new Store(":memory:");
+      const id = realDevice(s);
+      expect(
+        await collectEvents(
+          s,
+          id,
+          "actor",
+          firstPageOnly(() => logs, range),
+        ),
+      ).toMatchObject({
+        read: 100,
+        added: 100,
+        complete: false,
+        datetimeUnsupported: true,
+      });
+    }
   });
   it("il demo resta sincrono e non usa il lettore", async () => {
     const s = new Store(":memory:");
