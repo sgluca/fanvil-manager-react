@@ -456,26 +456,54 @@ export type PagedRead<T> = {
 export async function readAllPages<T>(
   fetchPage: (page: number) => Promise<{ items: T[]; total: number | null }>,
   maxPages = MAX_PAGES,
+  // Some firmware reports the size of the returned window as `total`: when the declared
+  // total is reached on a full page, ask for the next window anyway. A failure of that
+  // extra request only ends the read.
+  probePastTotal = false,
 ): Promise<PagedRead<T>> {
   const items: T[] = [];
   let total: number | null = null,
-    previousFirst: string | null = null;
+    previousFirst: string | null = null,
+    probing = false;
   for (let page = 1; page <= maxPages; page++) {
-    const r = await fetchPage(page);
-    total = r.total ?? total;
+    let r: { items: T[]; total: number | null };
+    try {
+      r = await fetchPage(page);
+    } catch (error) {
+      if (probing)
+        return {
+          items,
+          pages: page - 1,
+          total,
+          complete: true,
+          stoppedBy: "total",
+        };
+      throw error;
+    }
+    total = probing ? Math.max(total ?? 0, r.total ?? 0) : (r.total ?? total);
     const first = r.items.length ? JSON.stringify(r.items[0]) : null;
     if (page > 1 && first !== null && first === previousFirst)
       return {
         items,
         pages: page,
         total,
-        complete: false,
+        complete: probing,
         stoppedBy: "repeat",
       };
     previousFirst = first;
     items.push(...r.items);
-    if (total !== null && items.length >= total)
-      return { items, pages: page, total, complete: true, stoppedBy: "total" };
+    if (total !== null && items.length >= total) {
+      if (!probePastTotal || r.items.length < PAGE_SIZE)
+        return {
+          items,
+          pages: page,
+          total,
+          complete: true,
+          stoppedBy: "total",
+        };
+      probing = true;
+      continue;
+    }
     if (r.items.length < PAGE_SIZE)
       return {
         items,

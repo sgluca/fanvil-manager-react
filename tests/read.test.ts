@@ -234,6 +234,133 @@ describe("Eventi reali", () => {
     expect(rows.filter((r) => r.outcome === "denied")).toHaveLength(1);
     expect(JSON.stringify(rows)).not.toContain("must-be-dropped");
   });
+  const windowReader =
+    (logs: () => any[], total: "window" | "none"): DeviceReader =>
+    async (_op, page) => {
+      // Positional ids: the firmware numbers entries inside each returned window.
+      const data = logs()
+        .slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+        .map((l, i) => ({ ...l, id: String(i + 1) }));
+      return {
+        status: 200,
+        body: {
+          code: "200",
+          data,
+          ...(total === "window" ? { total: String(data.length) } : {}),
+        },
+      };
+    };
+  const log = (i: number, extra: Record<string, string> = {}) => ({
+    relay: "1",
+    openResult: "0",
+    openTime: String(Math.floor(Date.now() / 1000) - 86400 * 10 + i * 60),
+    ...extra,
+  });
+  it("legge oltre un total pari alla finestra e non perde eventi con id posizionali", async () => {
+    const s = new Store(":memory:");
+    const id = realDevice(s);
+    let logs = Array.from({ length: 250 }, (_, i) => log(i));
+    const reader = windowReader(() => logs, "window");
+    expect(await collectEvents(s, id, "actor", reader)).toMatchObject({
+      read: 250,
+      added: 250,
+      complete: true,
+    });
+    logs = [...logs, log(300)];
+    expect(await collectEvents(s, id, "actor", reader)).toMatchObject({
+      read: 251,
+      added: 1,
+    });
+    expect(
+      s.get("SELECT COUNT(*) n FROM access_events WHERE device_id=?", id)!.n,
+    ).toBe(251);
+  });
+  it("associa la persona da nome o credenziale, anche su eventi già acquisiti", async () => {
+    const s = new Store(":memory:");
+    const id = realDevice(s);
+    const person = (name: string) => {
+      const pid = "p-" + name.replace(/\W/g, "");
+      s.run(
+        "INSERT INTO people VALUES(?,?,?,?,?,?)",
+        pid,
+        name,
+        "",
+        1,
+        1,
+        new Date().toISOString(),
+      );
+      return pid;
+    };
+    const anna = person("Anna Rossi");
+    const logs = [
+      log(1, { userName: "anna rossi" }),
+      log(2, { userName: "Unknown", extra: "P:4242" }),
+      log(3, { userName: "Sconosciuto" }),
+    ];
+    const reader = windowReader(() => logs, "none");
+    const first = await collectEvents(s, id, "actor", reader, { secrets });
+    expect(first).toMatchObject({ added: 3, attributed: 1 });
+    const marco = person("Marco Bianchi");
+    s.run(
+      "INSERT INTO credentials VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+      "c1",
+      marco,
+      "pin",
+      null,
+      secrets.fingerprint("pin", "4242"),
+      "••••••",
+      "readable",
+      null,
+      0,
+      "import",
+      1,
+      new Date().toISOString(),
+    );
+    const again = await collectEvents(s, id, "actor", reader, { secrets });
+    expect(again).toMatchObject({ added: 0, attributed: 1 });
+    const rows = s.all(
+      "SELECT person_id FROM access_events ORDER BY occurred_at",
+    );
+    expect(rows.map((r) => r.person_id)).toEqual([anna, marco, null]);
+    expect(JSON.stringify(s.all("SELECT * FROM access_events"))).not.toContain(
+      "4242",
+    );
+  });
+  it("non importa eventi oltre la conservazione e migra le vecchie chiavi", async () => {
+    const s = new Store(":memory:");
+    const id = realDevice(s);
+    const old = {
+      relay: "1",
+      openResult: "0",
+      openTime: String(Math.floor(Date.now() / 1000) - 86400 * 200),
+    };
+    const logs = [old, log(1)];
+    const relay = s.get(
+      "SELECT id FROM relays WHERE device_id=? AND number=1",
+      id,
+    )!;
+    // Row stored by the previous version, keyed by the device id.
+    s.run(
+      "INSERT INTO access_events VALUES(?,?,?,?,?,?,?,?,?)",
+      "legacy",
+      id,
+      null,
+      relay.id,
+      "2",
+      new Date(Number(log(1).openTime) * 1000).toISOString(),
+      "granted",
+      "real",
+      "real:" + id + ":2",
+    );
+    const r = await collectEvents(
+      s,
+      id,
+      "actor",
+      windowReader(() => logs, "none"),
+      { retentionDays: 90 },
+    );
+    expect(r).toMatchObject({ read: 2, added: 0, expired: 1, count: 1 });
+  });
   it("il demo resta sincrono e non usa il lettore", async () => {
     const s = new Store(":memory:");
     const id = insertDevice(s, secrets, {
