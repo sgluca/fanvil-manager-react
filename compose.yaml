@@ -19,6 +19,7 @@ services:
       FANVIL_ALLOWED_CIDRS: ${FANVIL_ALLOWED_CIDRS:-}
       FANVIL_TIMEOUT_MS: ${FANVIL_TIMEOUT_MS:-5000}
       EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-90}
+      EVENT_COLLECT_MINUTES: ${EVENT_COLLECT_MINUTES:-5}
     volumes:
       - fanvil_data:/app/data
     read_only: true

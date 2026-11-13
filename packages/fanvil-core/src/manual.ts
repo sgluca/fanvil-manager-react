@@ -60,6 +60,10 @@ export const logResponse = envelope.extend({
       relay: scalar,
       openResult: scalar,
       openTime: scalar,
+      userName: scalar.optional(),
+      name: scalar.optional(),
+      cardNumber: scalar.optional(),
+      extra: scalar.optional(),
     }),
   ),
   total: scalar.optional(),
@@ -68,12 +72,41 @@ const totalOf = (v: unknown) =>
   v !== undefined && Number.isInteger(Number(v)) && Number(v) >= 0
     ? Number(v)
     : null;
-export function parseLogsPage(body: unknown) {
+// Fingerprint of a credential seen in a log entry: computed inside the parser so the
+// plaintext card number or PIN never leaves it.
+export type LogFingerprint = (kind: "rfid" | "pin", value: string) => string;
+export function parseLogsPage(body: unknown, fingerprint?: LogFingerprint) {
   if (emptyList(body, "data")) return { items: [], total: 0 };
   const r = logResponse.parse(body);
-  return { items: parseLogs(body), total: totalOf(r.total) };
+  return { items: parseLogs(body, fingerprint), total: totalOf(r.total) };
 }
-export function parseLogs(body: unknown) {
+const placeholderNames = new Set(["", "unknown", "anonymous", "stranger", "-"]);
+function logUserName(r: { userName?: unknown; name?: unknown }) {
+  const v = String(r.userName ?? r.name ?? "").trim();
+  return placeholderNames.has(v.toLowerCase()) ? null : v.slice(0, 200);
+}
+// The manual shows `extra` as "<type>:<value>" (e.g. "P:" for a PIN). Only prefixes that
+// unambiguously name a card or a PIN are used; anything else is discarded.
+function logCredential(
+  r: { cardNumber?: unknown; extra?: unknown },
+  fingerprint?: LogFingerprint,
+) {
+  if (!fingerprint) return null;
+  const card = String(r.cardNumber ?? "").trim();
+  if (/^[0-9A-Fa-f]{1,32}$/.test(card)) return fingerprint("rfid", card);
+  const m = /^([A-Za-z]+):(.+)$/.exec(String(r.extra ?? "").trim());
+  if (!m) return null;
+  const kind = m[1].toUpperCase(),
+    value = m[2].trim();
+  if (kind === "P" || kind === "PIN" || kind === "PASSWORD")
+    return /^\d{1,16}$/.test(value) ? fingerprint("pin", value) : null;
+  if (kind === "C" || kind === "CARD" || kind === "R" || kind === "RFID")
+    return /^[0-9A-Fa-f]{1,32}$/.test(value)
+      ? fingerprint("rfid", value)
+      : null;
+  return null;
+}
+export function parseLogs(body: unknown, fingerprint?: LogFingerprint) {
   return logResponse.parse(body).data.map((r) => {
     const seconds = Number(r.openTime);
     if (!Number.isFinite(seconds) || seconds < 0 || seconds > 4102444800)
@@ -89,6 +122,9 @@ export function parseLogs(body: unknown) {
             ? "denied"
             : "unknown",
       personId: null,
+      // Hints used only to match an existing person; never stored with the event.
+      userName: logUserName(r),
+      credentialFingerprint: logCredential(r, fingerprint),
     };
   });
 }

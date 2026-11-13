@@ -96,7 +96,9 @@ Il comando backup genera anche un sidecar JSON con metadati; copiare entrambi fu
 
 Prima di un upgrade: fermare app, creare backup, distribuire nuova immagine, riavviare e verificare healthcheck/login/inventario. Per rollback ripristinare immagine e backup compatibili. Non avviare più repliche sullo stesso SQLite.
 
-`EVENT_RETENTION_DAYS` (1–3650, default 90) elimina periodicamente eventi vecchi e diagnostica; lo staging applicato perde i valori cifrati oltre la retention. Gli audit, privi di valori delle credenziali, restano conservati. Gestire separatamente la retention dei backup.
+`EVENT_RETENTION_DAYS` (1–3650, default 90) elimina periodicamente eventi vecchi e diagnostica; lo staging applicato perde i valori cifrati oltre la retention. Gli audit, privi di valori delle credenziali, restano conservati. Gestire separatamente la retention dei backup. Gli eventi più vecchi della retention non vengono importati: per conservare tutto lo storico del dispositivo aumentare questo valore.
+
+`EVENT_COLLECT_MINUTES` (0–1440, default 5) acquisisce automaticamente, in sola lettura, gli eventi di tutti i dispositivi reali approvati (con `FANVIL_READ_ENABLED=true`); `0` disattiva l'acquisizione automatica. Gli esiti sono nella diagnostica del dispositivo; l'audit registra solo le acquisizioni che portano novità.
 
 ## Qualità
 

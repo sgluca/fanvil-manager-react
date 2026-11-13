@@ -446,8 +446,8 @@ export async function buildApp(config: Config, existingStore?: Store) {
   });
   // Single entry point for real reads: admin only, per-device approval and A10 limits enforced
   // here, failures stored as sanitized diagnostics and audited.
-  const deviceReader = (req: FastifyRequest, d: Row): DeviceReader => {
-    admin(req);
+  // `actor` null = automatic collection: failures go to diagnostics only, not to the audit.
+  const readerFor = (d: Row, actor: string | null): DeviceReader => {
     if (!d.secret) fail("Credenziali dispositivo mancanti", 409);
     const auth = secrets.decrypt(d.secret);
     return async (operation, page) => {
@@ -470,20 +470,28 @@ export async function buildApp(config: Config, existingStore?: Store) {
             JSON.stringify({
               source: "real",
               success: false,
+              automatic: actor === null,
               code: failure.code,
               message: failure.message,
               ...(failure.remoteStatus ? { status: failure.remoteStatus } : {}),
             }),
             now(),
           );
-          audit(req, "inspector.failed", d.id, {
-            operation,
-            code: failure.code,
-          });
+          if (actor !== null)
+            s.audit(actor, "inspector.failed", d.id, {
+              operation,
+              code: failure.code,
+            });
         });
         throw failure;
       }
     };
+  };
+  // Single entry point for real reads from the API: admin only, per-device approval and A10
+  // limits enforced, failures stored as sanitized diagnostics and audited.
+  const deviceReader = (req: FastifyRequest, d: Row): DeviceReader => {
+    admin(req);
+    return readerFor(d, req.user?.id ?? null);
   };
   route(
     "POST",
@@ -927,6 +935,7 @@ export async function buildApp(config: Config, existingStore?: Store) {
         d.id,
         req.user!.id,
         d.mode === "demo" ? undefined : deviceReader(req, d),
+        { retentionDays: config.retentionDays, secrets },
       );
     },
   );
@@ -1191,8 +1200,59 @@ export async function buildApp(config: Config, existingStore?: Store) {
   };
   const timer = setInterval(purge, 3600000);
   timer.unref();
+  // Automatic event collection from every approved real device (read-only).
+  let collecting = false,
+    collectTimer: NodeJS.Timeout | undefined,
+    firstCollect: NodeJS.Timeout | undefined;
+  const collectAll = async () => {
+    if (collecting) return;
+    collecting = true;
+    try {
+      const devices = s.all(
+        "SELECT * FROM devices WHERE mode='real' AND approved=1 AND secret IS NOT NULL AND model<>'A10'",
+      );
+      for (const d of devices)
+        try {
+          await collectEvents(s, d.id, null, readerFor(d, null), {
+            retentionDays: config.retentionDays,
+            secrets,
+          });
+        } catch (error) {
+          // Read failures are already in diagnostics; schema errors are stored here.
+          if (!(error instanceof FanvilReadError)) continue;
+          if (error.code === "FANVIL_RESPONSE_SCHEMA")
+            s.run(
+              "INSERT INTO diagnostics VALUES(?,?,?,?,?)",
+              randomUUID(),
+              d.id,
+              "eventsCollect",
+              JSON.stringify({
+                source: "real",
+                success: false,
+                automatic: true,
+                code: error.code,
+                message: error.message,
+              }),
+              now(),
+            );
+        }
+    } finally {
+      collecting = false;
+    }
+  };
+  if (config.realRead && config.eventCollectMinutes > 0) {
+    firstCollect = setTimeout(() => void collectAll(), 15000);
+    firstCollect.unref();
+    collectTimer = setInterval(
+      () => void collectAll(),
+      config.eventCollectMinutes * 60000,
+    );
+    collectTimer.unref();
+  }
   app.addHook("onClose", async () => {
     clearInterval(timer);
+    clearInterval(collectTimer);
+    clearTimeout(firstCollect);
     if (!existingStore) s.close();
   });
   return app;
