@@ -65,6 +65,16 @@ export const loginSchema = z.object({
 });
 export const relaySchema = z.object({ name: text });
 export const membershipSchema = z.object({ personId: id });
+// Full access of one person or one group, saved in one step: the server works out the
+// rules and memberships to add and remove. Omitted lists are left unchanged.
+export const personAccessSchema = z.object({
+  relayIds: z.array(id).max(1000).optional(),
+  groupIds: z.array(id).max(1000).optional(),
+});
+export const groupAccessSchema = z.object({
+  relayIds: z.array(id).max(1000).optional(),
+  memberIds: z.array(id).max(10000).optional(),
+});
 export const reconciliationSchema = z.object({
   confirm: z.literal(true),
   // Per staging item: an existing person id, or "skip" to leave that item out of this import.

@@ -19,6 +19,16 @@ test("login, persona, RFID, permesso, sync e import non distruttivo", async ({
   await page.getByRole("button", { name: "Nuova persona" }).click();
   await page.getByLabel("Nome e cognome").fill("Persona E2E");
   await page.getByRole("button", { name: "Salva e conferma" }).click();
+  // A new person goes straight to the access editor: tick entrances, save once.
+  await expect(
+    page.getByRole("dialog", { name: "Accessi · Persona E2E" }),
+  ).toBeVisible();
+  await page.getByLabel("Cortile e salone / Relay 2").check();
+  await expect(page.locator(".access-summary")).toContainText(
+    "Cortile e salone / Relay 2",
+  );
+  await page.getByRole("button", { name: "Salva accessi" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(
     page.getByRole("cell", { name: "Persona E2E", exact: true }),
   ).toBeVisible();
@@ -42,14 +52,6 @@ test("login, persona, RFID, permesso, sync e import non distruttivo", async ({
   await page
     .getByRole("button", { name: "Gruppi e Permessi", exact: true })
     .click();
-  await page.getByRole("button", { name: "Nuovo permesso" }).click();
-  await page
-    .getByLabel("Persona o gruppo")
-    .selectOption({ label: "Persona · Persona E2E" });
-  await page
-    .getByLabel("Dispositivo / Relay", { exact: true })
-    .selectOption({ label: "Cortile e salone / Relay 2" });
-  await page.getByRole("button", { name: "Salva e conferma" }).click();
   await expect(
     page.getByRole("cell", { name: "Relay 2", exact: true }),
   ).toBeVisible();

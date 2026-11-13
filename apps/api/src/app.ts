@@ -38,6 +38,8 @@ import {
   confirmSchema,
   relaySchema,
   membershipSchema,
+  personAccessSchema,
+  groupAccessSchema,
   reconciliationSchema,
   canWrite,
   id,
@@ -56,6 +58,8 @@ import {
   reconcile,
   collectEvents,
   observedGroup,
+  backfillObservedGroups,
+  setRules,
   startCardCapture,
   pollCardCapture,
   seedDemo,
@@ -204,7 +208,7 @@ export async function buildApp(config: Config, existingStore?: Store) {
     data: Record<string, unknown> = {},
   ) => s.audit(req.user?.id ?? null, action, entity, data);
   const route = (
-    method: "GET" | "POST" | "PATCH" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     url: string,
     summary: string,
     body: z.ZodType | undefined,
@@ -823,6 +827,84 @@ export async function buildApp(config: Config, existingStore?: Store) {
       return { ok: true };
     },
   );
+  route(
+    "PUT",
+    "/api/people/:id/access",
+    "Accessi della persona: relay diretti e gruppi in un solo salvataggio",
+    personAccessSchema,
+    (req) => {
+      const key = getId(req),
+        v = personAccessSchema.parse(req.body);
+      required(s, "people", key);
+      return s.transaction(() => {
+        const rules = v.relayIds
+          ? setRules(s, { personId: key }, v.relayIds)
+          : { added: 0, removed: 0 };
+        const groups = { added: 0, removed: 0 };
+        if (v.groupIds) {
+          const wanted = new Set(v.groupIds);
+          for (const g of wanted) required(s, "access_groups", g);
+          for (const m of s.all(
+            "SELECT group_id FROM group_memberships WHERE person_id=?",
+            key,
+          ))
+            if (!wanted.delete(m.group_id as string)) {
+              s.run(
+                "DELETE FROM group_memberships WHERE group_id=? AND person_id=?",
+                m.group_id,
+                key,
+              );
+              groups.removed++;
+            }
+          for (const g of wanted) {
+            s.run("INSERT INTO group_memberships VALUES(?,?)", g, key);
+            groups.added++;
+          }
+        }
+        audit(req, "person.access.set", key, { rules, groups });
+        return { ok: true, rules, groups };
+      });
+    },
+  );
+  route(
+    "PUT",
+    "/api/groups/:id/access",
+    "Accessi del gruppo: relay e membri in un solo salvataggio",
+    groupAccessSchema,
+    (req) => {
+      const key = getId(req),
+        v = groupAccessSchema.parse(req.body);
+      required(s, "access_groups", key);
+      return s.transaction(() => {
+        const rules = v.relayIds
+          ? setRules(s, { groupId: key }, v.relayIds)
+          : { added: 0, removed: 0 };
+        const members = { added: 0, removed: 0 };
+        if (v.memberIds) {
+          const wanted = new Set(v.memberIds);
+          for (const p of wanted) required(s, "people", p);
+          for (const m of s.all(
+            "SELECT person_id FROM group_memberships WHERE group_id=?",
+            key,
+          ))
+            if (!wanted.delete(m.person_id as string)) {
+              s.run(
+                "DELETE FROM group_memberships WHERE group_id=? AND person_id=?",
+                key,
+                m.person_id,
+              );
+              members.removed++;
+            }
+          for (const p of wanted) {
+            s.run("INSERT INTO group_memberships VALUES(?,?)", key, p);
+            members.added++;
+          }
+        }
+        audit(req, "group.access.set", key, { rules, members });
+        return { ok: true, rules, members };
+      });
+    },
+  );
   route("GET", "/api/rules", "Regole desiderate", undefined, () =>
     s.all("SELECT * FROM access_rules"),
   );
@@ -1236,6 +1318,7 @@ export async function buildApp(config: Config, existingStore?: Store) {
   }
   const dummyHash = await hash(randomBytes(32), { type: argon2id });
   if (config.demo) seedDemo(s, secrets);
+  backfillObservedGroups(s);
   const purge = () => {
     const cutoff = new Date(
       Date.now() - config.retentionDays * 86400000,

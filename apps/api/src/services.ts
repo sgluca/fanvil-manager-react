@@ -637,7 +637,11 @@ export function reconcile(
 // owning credentials observed there, with a rule on every relay of the device. The userlist and
 // card_info do not state a usable relay, so all relays are assumed (exact for 1-relay models).
 // Additive: never removes members or rules the operator changed afterwards.
-export function observedGroup(s: Store, deviceId: string, actor: string) {
+export function observedGroup(
+  s: Store,
+  deviceId: string,
+  actor: string | null,
+) {
   const device = required(s, "devices", deviceId);
   let groupId = s.get(
     "SELECT group_id FROM device_groups WHERE device_id=?",
@@ -688,6 +692,57 @@ export function observedGroup(s: Store, deviceId: string, actor: string) {
     );
   s.audit(actor, "group.observed", groupId, { deviceId, members, rules });
   return { groupId, members, rules, created: createdGroup };
+}
+// Imports reconciled before the observed group existed (or with the group deleted by hand)
+// have no generated group: create the missing ones at startup so nothing has to be redone.
+export function backfillObservedGroups(s: Store) {
+  const missing = s.all(
+    "SELECT DISTINCT k.device_id FROM device_credentials k JOIN credentials c ON c.id=k.credential_id WHERE k.state IN ('observed','synced') AND NOT EXISTS (SELECT 1 FROM device_groups g WHERE g.device_id=k.device_id)",
+  );
+  for (const d of missing)
+    s.transaction(() => observedGroup(s, d.device_id as string, null));
+  return missing.length;
+}
+// Replaces the direct relay rules of one person or group with exactly `relayIds`.
+export function setRules(
+  s: Store,
+  subject: { personId: string } | { groupId: string },
+  relayIds: string[],
+) {
+  const column = "personId" in subject ? "person_id" : "group_id",
+    key = "personId" in subject ? subject.personId : subject.groupId,
+    wanted = new Set(relayIds);
+  const relays = new Map<string, string>();
+  for (const relayId of wanted) {
+    const relay = s.get("SELECT id,device_id FROM relays WHERE id=?", relayId);
+    if (!relay) failItem("Relay inesistente", 404);
+    relays.set(relayId, relay!.device_id as string);
+  }
+  const current = s.all(
+    `SELECT id,relay_id FROM access_rules WHERE ${column}=?`,
+    key,
+  );
+  let removed = 0,
+    added = 0;
+  const kept = new Set<string>();
+  for (const r of current)
+    if (!wanted.has(r.relay_id as string) || kept.has(r.relay_id as string)) {
+      s.run("DELETE FROM access_rules WHERE id=?", r.id);
+      removed++;
+    } else kept.add(r.relay_id as string);
+  for (const [relayId, deviceId] of relays)
+    if (!kept.has(relayId)) {
+      s.run(
+        "INSERT INTO access_rules VALUES(?,?,?,?,?)",
+        randomUUID(),
+        column === "person_id" ? key : null,
+        column === "group_id" ? key : null,
+        deviceId,
+        relayId,
+      );
+      added++;
+    }
+  return { added, removed };
 }
 // Card capture: the operator swipes a new card on the reader; the device logs the attempt and
 // we read the card number back from the open-door log. Read only: nothing is written on the

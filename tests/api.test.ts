@@ -387,6 +387,61 @@ describe("Flusso completo con SQLite e adapter mock", () => {
       s.get("SELECT id FROM access_rules WHERE group_id=?", g.id),
     ).toBeUndefined();
   });
+  it("accessi di persona e gruppo si salvano in un solo passaggio", async () => {
+    const before = s
+      .all("SELECT relay_id FROM access_rules WHERE person_id=?", personId)
+      .map((r: any) => r.relay_id);
+    const g = (await call("POST", "/groups", { name: "Gruppo rapido" })).json();
+    const relayIds = device.relays.map((r: any) => r.id);
+    const r1 = await call("PUT", "/people/" + personId + "/access", {
+      relayIds,
+      groupIds: [g.id],
+    });
+    expect(r1.statusCode).toBe(200);
+    expect(
+      s.all("SELECT relay_id FROM access_rules WHERE person_id=?", personId)
+        .length,
+    ).toBe(relayIds.length);
+    expect(
+      s.get(
+        "SELECT 1 AS x FROM group_memberships WHERE group_id=? AND person_id=?",
+        g.id,
+        personId,
+      ),
+    ).toBeTruthy();
+    // Saving again is idempotent; shrinking removes only what was unticked.
+    const r2 = await call("PUT", "/people/" + personId + "/access", {
+      relayIds: [relayIds[0]],
+      groupIds: [],
+    });
+    expect(r2.json()).toMatchObject({
+      rules: { added: 0, removed: relayIds.length - 1 },
+      groups: { added: 0, removed: 1 },
+    });
+    const r3 = await call("PUT", "/groups/" + g.id + "/access", {
+      relayIds,
+      memberIds: [personId],
+    });
+    expect(r3.json()).toMatchObject({
+      rules: { added: relayIds.length, removed: 0 },
+      members: { added: 1, removed: 0 },
+    });
+    expect(
+      (
+        await call("PUT", "/groups/" + g.id + "/access", {
+          relayIds: [randomUUID()],
+        })
+      ).statusCode,
+    ).toBe(404);
+    // A failed save changes nothing.
+    expect(
+      s.all("SELECT id FROM access_rules WHERE group_id=?", g.id).length,
+    ).toBe(relayIds.length);
+    await call("PUT", "/people/" + personId + "/access", {
+      relayIds: before,
+    });
+    await call("DELETE", "/groups/" + g.id);
+  });
   it("fallimento apply esegue rollback e permette retry sicuro", async () => {
     await call("PATCH", "/credentials/" + credentialId, { revoked: false });
     const p = (

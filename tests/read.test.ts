@@ -585,6 +585,7 @@ describe("Applicazione dell'importazione", () => {
 import { cardFromLogEntry } from "../packages/fanvil-core/src/manual.ts";
 import {
   observedGroup,
+  backfillObservedGroups,
   startCardCapture,
   pollCardCapture,
 } from "../apps/api/src/services.ts";
@@ -615,6 +616,27 @@ describe("Gruppo accessi rilevati", () => {
     const again = observedGroup(s, deviceId, "admin");
     expect(again).toMatchObject({ created: false, members: 0, rules: 0 });
     expect(s.all("SELECT * FROM access_groups")).toHaveLength(1);
+  });
+  it("crea all'avvio i gruppi mancanti per import riconciliati in precedenza", async () => {
+    const s = new Store(":memory:");
+    const deviceId = realDevice(s, "i60K");
+    const { reader } = fakeFirmware({
+      cards: [{ name: "Anna", cardNumber: "SYNTH-A" }],
+    });
+    const batch = await stage(s, secrets, deviceId, "admin", reader);
+    reconcile(s, batch.id, {}, "admin");
+    // Simulate data from a version without the generated group.
+    s.run("DELETE FROM access_rules");
+    s.run("DELETE FROM access_groups");
+    expect(backfillObservedGroups(s)).toBe(1);
+    const group = s.get(
+      "SELECT group_id FROM device_groups WHERE device_id=?",
+      deviceId,
+    )!;
+    expect(
+      s.all("SELECT * FROM group_memberships WHERE group_id=?", group.group_id),
+    ).toHaveLength(1);
+    expect(backfillObservedGroups(s)).toBe(0);
   });
 });
 describe("Lettura nuova tessera dal log", () => {

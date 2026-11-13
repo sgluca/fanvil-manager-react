@@ -94,6 +94,10 @@ function App() {
       title: string;
       content: React.ReactNode;
     } | null>(null);
+  const [accessEdit, setAccessEdit] = useState<{
+    kind: "person" | "group";
+    id: string;
+  } | null>(null);
   const [eventFilters, setEventFilters] = useState({
     deviceId: "",
     personId: "",
@@ -275,15 +279,24 @@ function App() {
     fields: Field[],
     submit: (v: Item) => Promise<unknown>,
     description?: string,
+    after?: (result: any) => void,
   ) =>
     setModal({
       title,
       fields,
       description,
       submit: async (v) => {
-        if (await act(() => submit(v))) setModal(null);
+        let result: unknown;
+        if (await act(async () => (result = await submit(v)))) {
+          setModal(null);
+          after?.(result);
+        }
       },
     });
+  const editAccess = (kind: "person" | "group", id: string) => {
+    setError("");
+    setAccessEdit({ kind, id });
+  };
   const confirm = (
     title: string,
     description: string,
@@ -389,6 +402,9 @@ function App() {
         },
       ],
       (v) => api("/people" + (p ? "/" + p.id : ""), p ? "PATCH" : "POST", v),
+      undefined,
+      // A new person is useless without access: go straight to choosing it.
+      (r) => !p && r?.id && editAccess("person", r.id),
     );
   const inspect = async (d: Item, operation = "deviceInfo") =>
     act(async () => {
@@ -1289,6 +1305,12 @@ function App() {
                       <td>
                         {write && (
                           <>
+                            <button
+                              className="primary"
+                              onClick={() => editAccess("person", p.id)}
+                            >
+                              Accessi
+                            </button>{" "}
                             <button onClick={() => personForm(p)}>
                               Modifica
                             </button>{" "}
@@ -1384,6 +1406,14 @@ function App() {
                           {write && (
                             <>
                               <button
+                                className="primary"
+                                onClick={() =>
+                                  editAccess("person", c.person_id)
+                                }
+                              >
+                                Accessi
+                              </button>{" "}
+                              <button
                                 onClick={() =>
                                   openForm(
                                     "Modifica credenziale",
@@ -1455,6 +1485,8 @@ function App() {
                           { key: "notes", label: "Note", type: "textarea" },
                         ],
                         (v) => api("/groups", "POST", v),
+                        undefined,
+                        (r) => r?.id && editAccess("group", r.id),
                       )
                     }
                   >
@@ -1470,6 +1502,27 @@ function App() {
                       {g.name}
                     </h3>
                     <p>{g.notes}</p>
+                    <div className="group-opens">
+                      <small>Apre:</small>{" "}
+                      {devices.flatMap((d) =>
+                        d.relays
+                          .filter((l: Item) =>
+                            rules.some(
+                              (r) => r.group_id === g.id && r.relay_id === l.id,
+                            ),
+                          )
+                          .map((l: Item) => (
+                            <Badge key={l.id} tone="green">
+                              {d.relays.length > 1
+                                ? d.name + " / " + l.name
+                                : d.name}
+                            </Badge>
+                          )),
+                      )}
+                      {!rules.some((r) => r.group_id === g.id) && (
+                        <span className="muted">nessun ingresso</span>
+                      )}
+                    </div>
                     <div className="members">
                       {g.members.map((m: Item) => (
                         <span className="member" key={m.id}>
@@ -1478,14 +1531,13 @@ function App() {
                             <button
                               aria-label={"Rimuovi " + m.name}
                               onClick={() =>
-                                confirm(
-                                  "Rimuovi membro",
-                                  "Aggiorna i permessi desiderati del gruppo.",
+                                void act(
                                   () =>
                                     api(
                                       "/groups/" + g.id + "/members/" + m.id,
                                       "DELETE",
                                     ),
+                                  m.name + " rimossa dal gruppo",
                                 )
                               }
                             >
@@ -1499,24 +1551,10 @@ function App() {
                     {write && (
                       <div className="panel-actions">
                         <button
-                          disabled={!people.length}
-                          onClick={() =>
-                            openForm(
-                              "Aggiungi membro",
-                              [
-                                {
-                                  key: "personId",
-                                  label: "Persona",
-                                  type: "select",
-                                  options: opts(people),
-                                },
-                              ],
-                              (v) =>
-                                api("/groups/" + g.id + "/members", "POST", v),
-                            )
-                          }
+                          className="primary"
+                          onClick={() => editAccess("group", g.id)}
                         >
-                          Aggiungi membro
+                          Ingressi e membri
                         </button>
                         <button
                           onClick={() =>
@@ -1569,7 +1607,7 @@ function App() {
                     }
                     onClick={() =>
                       openForm(
-                        "Nuovo permesso",
+                        "Modifica accessi",
                         [
                           {
                             key: "subject",
@@ -1586,34 +1624,17 @@ function App() {
                               })),
                             ],
                           },
-                          {
-                            key: "relayId",
-                            label: "Dispositivo / Relay",
-                            type: "select",
-                            options: devices.flatMap((d) =>
-                              d.relays.map((r: Item) => ({
-                                value: r.id,
-                                label: d.name + " / " + r.name,
-                              })),
-                            ),
-                          },
                         ],
-                        (v) => {
-                          const [type, key] = v.subject.split(":");
-                          return api("/rules", "POST", {
-                            personId: type === "p" ? key : null,
-                            groupId: type === "g" ? key : null,
-                            relayId: v.relayId,
-                            deviceId: devices.find((d) =>
-                              d.relays.some((r: Item) => r.id === v.relayId),
-                            )!.id,
-                          });
+                        async (v) => ({ notice: "", subject: v.subject }),
+                        "Scegli a chi dare accesso: nella schermata successiva spunti tutti gli ingressi in una volta.",
+                        (r) => {
+                          const [type, key] = String(r.subject).split(":");
+                          editAccess(type === "g" ? "group" : "person", key);
                         },
-                        "Finestre temporali non abilitate. Le regole descrivono lo stato desiderato, da applicare separatamente.",
                       )
                     }
                   >
-                    ＋ Nuovo permesso
+                    ＋ Assegna accessi
                   </button>
                 )}
               </div>
@@ -1649,17 +1670,27 @@ function App() {
                         </td>
                         <td>
                           {write && (
-                            <button
-                              onClick={() =>
-                                confirm(
-                                  "Rimuovi permesso",
-                                  "La rimozione riguarda la regola locale. Verificare l’anteprima prima di applicare.",
-                                  () => api("/rules/" + r.id, "DELETE"),
-                                )
-                              }
-                            >
-                              Rimuovi
-                            </button>
+                            <>
+                              <button
+                                onClick={() =>
+                                  r.person_id
+                                    ? editAccess("person", r.person_id)
+                                    : editAccess("group", r.group_id)
+                                }
+                              >
+                                Modifica
+                              </button>{" "}
+                              <button
+                                onClick={() =>
+                                  void act(
+                                    () => api("/rules/" + r.id, "DELETE"),
+                                    "Permesso rimosso",
+                                  )
+                                }
+                              >
+                                Rimuovi
+                              </button>
+                            </>
                           )}
                         </td>
                       </tr>
@@ -2359,6 +2390,39 @@ function App() {
           close={() => setModal(null)}
         />
       )}
+      {accessEdit &&
+        (() => {
+          const subject = (accessEdit.kind === "person" ? people : groups).find(
+            (x) => x.id === accessEdit.id,
+          );
+          return subject ? (
+            <AccessEditor
+              key={accessEdit.kind + accessEdit.id}
+              kind={accessEdit.kind}
+              subject={subject}
+              devices={devices}
+              groups={groups}
+              people={people}
+              rules={rules}
+              busy={busy}
+              error={error}
+              close={() => setAccessEdit(null)}
+              save={async (body) => {
+                const path =
+                  (accessEdit.kind === "person" ? "/people/" : "/groups/") +
+                  accessEdit.id +
+                  "/access";
+                if (
+                  await act(
+                    () => api(path, "PUT", body),
+                    "Accessi salvati: applica la sincronizzazione per renderli effettivi sui citofoni",
+                  )
+                )
+                  setAccessEdit(null);
+              }}
+            />
+          ) : null;
+        })()}
       {detail && (
         <Dialog title={detail.title} close={() => setDetail(null)}>
           <div className="detail-content">{detail.content}</div>
@@ -2547,6 +2611,274 @@ function CardCapture({
         <button onClick={() => void start()}>Nuova lettura</button>
       )}
     </div>
+  );
+}
+// One screen for everything a person (or a group) can open: tick entrances and groups, save once.
+// Replaces adding/removing one rule or one membership at a time.
+function AccessEditor({
+  kind,
+  subject,
+  devices,
+  groups,
+  people,
+  rules,
+  busy,
+  error,
+  save,
+  close,
+}: {
+  kind: "person" | "group";
+  subject: Item;
+  devices: Item[];
+  groups: Item[];
+  people: Item[];
+  rules: Item[];
+  busy: boolean;
+  error: string;
+  save: (body: Item) => Promise<void>;
+  close: () => void;
+}) {
+  const column = kind === "person" ? "person_id" : "group_id";
+  const [relays, setRelays] = useState<Set<string>>(
+    () =>
+      new Set(
+        rules.filter((r) => r[column] === subject.id).map((r) => r.relay_id),
+      ),
+  );
+  const [linked, setLinked] = useState<Set<string>>(
+    () =>
+      new Set(
+        kind === "person"
+          ? groups
+              .filter((g) => g.members.some((m: Item) => m.id === subject.id))
+              .map((g) => g.id)
+          : subject.members.map((m: Item) => m.id),
+      ),
+  );
+  const [query, setQuery] = useState("");
+  const toggle = (
+    set: Set<string>,
+    update: (s: Set<string>) => void,
+    ids: string[],
+    on: boolean,
+  ) => {
+    const next = new Set(set);
+    for (const i of ids) {
+      if (on) next.add(i);
+      else next.delete(i);
+    }
+    update(next);
+  };
+  const groupRelays = (groupId: string) =>
+    rules.filter((r) => r.group_id === groupId).map((r) => r.relay_id);
+  // Relays a person already gets through the groups currently ticked.
+  const viaGroup = new Map<string, string>();
+  if (kind === "person")
+    for (const g of groups)
+      if (linked.has(g.id))
+        for (const r of groupRelays(g.id))
+          if (!viaGroup.has(r)) viaGroup.set(r, g.name);
+  const relayLabel = (d: Item, r: Item) =>
+    d.relays.length > 1 ? d.name + " / " + r.name : d.name;
+  const effective = devices.flatMap((d) =>
+    d.relays
+      .filter((r: Item) => relays.has(r.id) || viaGroup.has(r.id))
+      .map((r: Item) => relayLabel(d, r)),
+  );
+  const shown = people.filter((p) =>
+    p.name.toLowerCase().includes(query.toLowerCase()),
+  );
+  const allRelays = devices.flatMap((d) => d.relays.map((r: Item) => r.id));
+  return (
+    <Dialog
+      title={(kind === "person" ? "Accessi · " : "Gruppo · ") + subject.name}
+      close={close}
+    >
+      <form
+        className="access-editor"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save(
+            kind === "person"
+              ? { relayIds: [...relays], groupIds: [...linked] }
+              : { relayIds: [...relays], memberIds: [...linked] },
+          );
+        }}
+      >
+        {error && (
+          <div role="alert" className="alert error">
+            {error}
+          </div>
+        )}
+        <fieldset>
+          <legend>
+            Ingressi {kind === "person" ? "diretti" : "del gruppo"}
+            <span>
+              <button
+                type="button"
+                onClick={() => setRelays(new Set(allRelays))}
+              >
+                Tutti
+              </button>
+              <button type="button" onClick={() => setRelays(new Set())}>
+                Nessuno
+              </button>
+            </span>
+          </legend>
+          {devices.map((d) => {
+            const ids = d.relays.map((r: Item) => r.id);
+            const all = ids.every((i: string) => relays.has(i));
+            return (
+              <div className="access-device" key={d.id}>
+                {d.relays.length > 1 && (
+                  <label className="check-label access-device-name">
+                    <input
+                      type="checkbox"
+                      checked={all}
+                      onChange={(e) =>
+                        toggle(relays, setRelays, ids, e.target.checked)
+                      }
+                    />
+                    {d.name} · tutti i relay
+                  </label>
+                )}
+                {d.relays.map((r: Item) => (
+                  <label
+                    className={
+                      "check-label" +
+                      (d.relays.length > 1 ? " access-relay" : "")
+                    }
+                    key={r.id}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={relayLabel(d, r)}
+                      checked={relays.has(r.id)}
+                      onChange={(e) =>
+                        toggle(relays, setRelays, [r.id], e.target.checked)
+                      }
+                    />
+                    {d.relays.length > 1 ? r.name : d.name}
+                    {viaGroup.has(r.id) && (
+                      <small className="muted">
+                        già tramite «{viaGroup.get(r.id)}»
+                      </small>
+                    )}
+                  </label>
+                ))}
+              </div>
+            );
+          })}
+          {!devices.length && <small>Nessun dispositivo registrato</small>}
+        </fieldset>
+        {kind === "person" ? (
+          <fieldset>
+            <legend>Gruppi</legend>
+            {groups.map((g) => (
+              <label className="check-label" key={g.id}>
+                <input
+                  type="checkbox"
+                  checked={linked.has(g.id)}
+                  onChange={(e) =>
+                    toggle(linked, setLinked, [g.id], e.target.checked)
+                  }
+                />
+                {g.name}
+                <small className="muted">
+                  {groupRelays(g.id).length
+                    ? "apre " +
+                      devices
+                        .flatMap((d) =>
+                          d.relays
+                            .filter((r: Item) =>
+                              groupRelays(g.id).includes(r.id),
+                            )
+                            .map((r: Item) => relayLabel(d, r)),
+                        )
+                        .join(", ")
+                    : "nessun ingresso"}
+                </small>
+              </label>
+            ))}
+            {!groups.length && <small>Nessun gruppo</small>}
+          </fieldset>
+        ) : (
+          <fieldset>
+            <legend>
+              Membri ({linked.size})
+              <span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    toggle(
+                      linked,
+                      setLinked,
+                      shown.map((p) => p.id),
+                      true,
+                    )
+                  }
+                >
+                  {query ? "Aggiungi filtrati" : "Tutti"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    toggle(
+                      linked,
+                      setLinked,
+                      shown.map((p) => p.id),
+                      false,
+                    )
+                  }
+                >
+                  {query ? "Togli filtrati" : "Nessuno"}
+                </button>
+              </span>
+            </legend>
+            <input
+              type="search"
+              aria-label="Cerca persona"
+              placeholder="Cerca persona…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <div className="access-people">
+              {shown.map((p) => (
+                <label className="check-label" key={p.id}>
+                  <input
+                    type="checkbox"
+                    checked={linked.has(p.id)}
+                    onChange={(e) =>
+                      toggle(linked, setLinked, [p.id], e.target.checked)
+                    }
+                  />
+                  {p.name}
+                  {!p.active && <small className="muted">inattiva</small>}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
+        {kind === "person" && (
+          <p className="access-summary">
+            <strong>Potrà aprire:</strong>{" "}
+            {effective.length ? effective.join(", ") : "nessun ingresso"}
+          </p>
+        )}
+        <p className="dialog-description">
+          Stato desiderato locale: diventa effettivo sui citofoni con la
+          sincronizzazione.
+        </p>
+        <div className="dialog-actions">
+          <button type="button" onClick={close} disabled={busy}>
+            Annulla
+          </button>
+          <button type="submit" className="primary" disabled={busy}>
+            {busy ? "Salvataggio…" : "Salva accessi"}
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 function Dialog({
