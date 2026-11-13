@@ -26,6 +26,7 @@ const app = await buildApp(
     cidrs: [],
     timeoutMs: 100,
     retentionDays: 90,
+    eventCollectMinutes: 0,
     webRoot: resolve("apps/web/dist"),
   },
   s,

@@ -182,6 +182,16 @@ function App() {
         .finally(() => setLoading(false));
     }
   }, [api, session, page, eventParams]);
+  // Events are collected automatically on the server: keep the list current.
+  useEffect(() => {
+    if (!session || page !== "Eventi") return;
+    const timer = setInterval(() => {
+      api("/events?" + eventParams())
+        .then((r) => setData((d) => ({ ...d, events: r })))
+        .catch(() => undefined);
+    }, 60000);
+    return () => clearInterval(timer);
+  }, [api, session, page, eventParams]);
   const act = async (
     fn: () => Promise<unknown>,
     message = "Operazione completata",
@@ -1825,18 +1835,34 @@ function App() {
                             );
                             const r = await api("/events?" + eventParams());
                             setData((d) => ({ ...d, events: r }));
-                            return c.read === undefined
-                              ? undefined
-                              : {
-                                  notice:
-                                    c.read +
-                                    " eventi letti, " +
-                                    c.added +
-                                    " nuovi" +
-                                    (c.complete
-                                      ? ""
-                                      : ". ATTENZIONE: lettura forse incompleta"),
-                                };
+                            if (c.read === undefined) return undefined;
+                            const day = (v: string | null) =>
+                              v
+                                ? new Date(v).toLocaleDateString("it-IT", {
+                                    timeZone: "Europe/Rome",
+                                  })
+                                : "–";
+                            return {
+                              notice:
+                                c.read +
+                                " eventi letti sul dispositivo (dal " +
+                                day(c.oldest) +
+                                " al " +
+                                day(c.newest) +
+                                "), " +
+                                c.added +
+                                " nuovi, " +
+                                c.attributed +
+                                " associati a una persona" +
+                                (c.expired
+                                  ? ", " +
+                                    c.expired +
+                                    " non importati perché più vecchi del periodo di conservazione"
+                                  : "") +
+                                (c.complete
+                                  ? ""
+                                  : ". ATTENZIONE: lettura forse incompleta"),
+                            };
                           },
                         )
                       }

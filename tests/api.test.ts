@@ -57,6 +57,7 @@ beforeAll(async () => {
       cidrs: [],
       timeoutMs: 100,
       retentionDays: 90,
+      eventCollectMinutes: 0,
     },
     s,
   );

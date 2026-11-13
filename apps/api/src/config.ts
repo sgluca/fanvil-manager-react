@@ -10,6 +10,7 @@ export type Config = {
   cidrs: string[];
   timeoutMs: number;
   retentionDays: number;
+  eventCollectMinutes: number;
   webRoot?: string;
 };
 export function configFromEnv(): Config {
@@ -24,16 +25,22 @@ export function configFromEnv(): Config {
   if (production && !origin.startsWith("https://"))
     throw Error("PUBLIC_ORIGIN deve usare HTTPS in produzione");
   const timeoutMs = Number(process.env.FANVIL_TIMEOUT_MS ?? 5000),
-    retentionDays = Number(process.env.EVENT_RETENTION_DAYS ?? 90);
+    retentionDays = Number(process.env.EVENT_RETENTION_DAYS ?? 90),
+    eventCollectMinutes = Number(process.env.EVENT_COLLECT_MINUTES ?? 5);
   if (
     !Number.isInteger(timeoutMs) ||
     timeoutMs < 100 ||
     timeoutMs > 60000 ||
     !Number.isInteger(retentionDays) ||
     retentionDays < 1 ||
-    retentionDays > 3650
+    retentionDays > 3650 ||
+    !Number.isInteger(eventCollectMinutes) ||
+    eventCollectMinutes < 0 ||
+    eventCollectMinutes > 1440
   )
-    throw Error("Timeout o retention non validi");
+    throw Error(
+      "Timeout, retention o intervallo acquisizione eventi non validi",
+    );
   return {
     databasePath: process.env.DATABASE_PATH ?? "data/fanvil.sqlite",
     encryptionKey: key,
@@ -48,6 +55,7 @@ export function configFromEnv(): Config {
       .filter(Boolean),
     timeoutMs,
     retentionDays,
+    eventCollectMinutes,
     webRoot: resolve("apps/web/dist"),
   };
 }

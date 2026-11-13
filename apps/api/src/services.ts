@@ -687,21 +687,42 @@ export function observedGroup(s: Store, deviceId: string, actor: string) {
 }
 // Card capture: the operator swipes a new card on the reader; the device logs the attempt and
 // we read the card number back from the open-door log. Read only: nothing is written on the
-// device. A baseline of log ids taken at start isolates new swipes from device clock skew.
+// device. A baseline of log entries taken at start isolates new swipes from device clock skew.
+// Entries are keyed by content (time, relay, outcome, credential) and order, not by the device
+// `id`, which on some firmware is only the position inside the returned window.
 const captures = new Map<
   string,
   { deviceId: string; baseline: Set<string>; startedAt: number; demo: boolean }
 >();
 const CAPTURE_TTL = 10 * 60_000;
-async function readLogCards(reader: DeviceReader) {
-  return readAllPages((page) =>
-    reader("eventsRead", page).then((r) =>
-      parsed("device_log", r.body, () => parseLogCardsPage(r.body)),
-    ),
+async function readLogCards(secrets: Secrets, reader: DeviceReader) {
+  const log = await readAllPages(
+    (page) =>
+      reader("eventsRead", page).then((r) =>
+        parsed("device_log", r.body, () => parseLogCardsPage(r.body)),
+      ),
+    200,
+    true,
   );
+  const seen = new Map<string, number>();
+  const keys = log.items.map((e) => {
+    const base = [
+      e.occurredAt,
+      e.relayNumber ?? 0,
+      e.outcome,
+      e.card
+        ? secrets.fingerprint("rfid", e.card).slice(0, 32)
+        : (e.extraShape ?? ""),
+    ].join("|");
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    return base + "#" + n;
+  });
+  return { ...log, keys };
 }
 export async function startCardCapture(
   s: Store,
+  secrets: Secrets,
   deviceId: string,
   actor: string,
   reader?: DeviceReader,
@@ -713,8 +734,8 @@ export async function startCardCapture(
     complete = true;
   if (d.mode !== "demo") {
     if (!reader) fail("Lettura reale non disponibile", 409);
-    const log = await readLogCards(reader);
-    baseline = new Set(log.items.map((e) => e.remoteId));
+    const log = await readLogCards(secrets, reader);
+    baseline = new Set(log.keys);
     complete = log.complete;
   }
   const captureId = randomUUID();
@@ -756,8 +777,8 @@ export async function pollCardCapture(
         : [];
   } else {
     if (!reader) fail("Lettura reale non disponibile", 409);
-    const log = await readLogCards(reader);
-    entries = log.items.filter((e) => !c.baseline.has(e.remoteId));
+    const log = await readLogCards(secrets, reader);
+    entries = log.items.filter((_, i) => !c.baseline.has(log.keys[i]));
     complete = log.complete;
   }
   const cards = entries
@@ -814,52 +835,171 @@ function collectDemoEvents(s: Store, deviceId: string, actor: string) {
     )!.n,
   };
 }
+export type CollectOptions = {
+  // Events older than this are not stored: the retention purge would delete them anyway.
+  retentionDays?: number;
+  secrets?: Secrets;
+  maxPages?: number;
+};
+// Stable key from the event content, not from the device's `id` (which on some firmware is
+// only the position inside the returned window). Identical events in the same second are
+// told apart by their order of appearance.
+function eventKeys<T>(
+  deviceId: string,
+  rows: T[],
+  parts: (r: T) => [string, number | null, string],
+) {
+  const seen = new Map<string, number>();
+  return rows.map((r) => {
+    const [at, relay, outcome] = parts(r);
+    const base =
+      "real2:" + deviceId + ":" + at + ":" + (relay ?? 0) + ":" + outcome;
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    return base + ":" + n;
+  });
+}
+// Events collected before the content-based key used the device id: rewrite those keys once
+// so a new collection does not duplicate them.
+function migrateEventKeys(s: Store, deviceId: string) {
+  const old = s.all(
+    "SELECT e.id,e.occurred_at,e.outcome,r.number relay FROM access_events e LEFT JOIN relays r ON r.id=e.relay_id WHERE e.device_id=? AND e.source='real' AND e.dedup_key NOT LIKE 'real2:%' ORDER BY e.occurred_at,e.remote_id",
+    deviceId,
+  );
+  if (!old.length) return;
+  const keys = eventKeys(deviceId, old, (r) => [
+    r.occurred_at,
+    r.relay ?? null,
+    r.outcome,
+  ]);
+  old.forEach((r, i) => {
+    if (
+      !s.run(
+        "UPDATE OR IGNORE access_events SET dedup_key=? WHERE id=?",
+        keys[i],
+        r.id,
+      ).changes
+    )
+      s.run("DELETE FROM access_events WHERE id=?", r.id);
+  });
+}
+// A person is attributed only from data the device reports: the credential used (matched by
+// fingerprint against known credentials) or a user name equal to exactly one local person.
+function personMatcher(s: Store) {
+  const byName = new Map<string, string | null>();
+  for (const p of s.all("SELECT id,name FROM people")) {
+    const k = String(p.name).trim().toLowerCase();
+    byName.set(k, byName.has(k) ? null : p.id);
+  }
+  return (e: {
+    userName: string | null;
+    credentialFingerprint: string | null;
+  }) => {
+    if (e.credentialFingerprint) {
+      const c = s.get(
+        "SELECT person_id FROM credentials WHERE fingerprint=?",
+        e.credentialFingerprint,
+      );
+      if (c) return c.person_id as string;
+    }
+    return e.userName
+      ? (byName.get(e.userName.trim().toLowerCase()) ?? null)
+      : null;
+  };
+}
 export async function collectEvents(
   s: Store,
   deviceId: string,
-  actor: string,
+  actor: string | null,
   reader?: DeviceReader,
+  options: CollectOptions = {},
 ) {
   const d = required(s, "devices", deviceId);
-  if (d.mode === "demo") return collectDemoEvents(s, deviceId, actor);
+  if (d.mode === "demo")
+    return collectDemoEvents(s, deviceId, actor ?? "system");
   if (!reader) fail("Lettura reale non disponibile", 409);
   const relays = s.all(
     "SELECT id,number FROM relays WHERE device_id=? ORDER BY number",
     deviceId,
   );
-  const read = await readAllPages((page) =>
-    reader("eventsRead", page).then((r) =>
-      parsed("device_log", r.body, () => parseLogsPage(r.body)),
-    ),
+  const fingerprint = options.secrets
+    ? (kind: "rfid" | "pin", value: string) =>
+        options.secrets!.fingerprint(kind, value)
+    : undefined;
+  const read = await readAllPages(
+    (page) =>
+      reader("eventsRead", page).then((r) =>
+        parsed("device_log", r.body, () => parseLogsPage(r.body, fingerprint)),
+      ),
+    options.maxPages ?? 200,
+    true,
   );
-  let added = 0;
-  s.transaction(() => {
-    for (const e of read.items) {
-      // Relay 0/unknown stays unattributed; identity is never inferred from the log.
+  const cutoff = options.retentionDays
+    ? new Date(Date.now() - options.retentionDays * 86400000).toISOString()
+    : null;
+  let added = 0,
+    attributed = 0,
+    expired = 0;
+  const result = s.transaction(() => {
+    migrateEventKeys(s, deviceId);
+    const match = personMatcher(s);
+    const keys = eventKeys(deviceId, read.items, (e) => [
+      e.occurredAt,
+      e.relayNumber,
+      e.outcome,
+    ]);
+    read.items.forEach((e, i) => {
+      if (cutoff && e.occurredAt < cutoff) {
+        expired++;
+        return;
+      }
+      // Relay 0/unknown stays unattributed.
       const relay = relays.find((r) => r.number === e.relayNumber);
-      added += Number(
-        s.run(
-          "INSERT OR IGNORE INTO access_events VALUES(?,?,?,?,?,?,?,?,?)",
-          randomUUID(),
-          deviceId,
-          null,
-          relay?.id ?? null,
-          e.remoteId,
-          e.occurredAt,
-          e.outcome,
-          "real",
-          "real:" + deviceId + ":" + e.remoteId,
-        ).changes,
+      const personId = match(e);
+      const existing = s.get(
+        "SELECT id,person_id FROM access_events WHERE dedup_key=?",
+        keys[i],
       );
-    }
+      if (existing) {
+        if (!existing.person_id && personId) {
+          s.run(
+            "UPDATE access_events SET person_id=? WHERE id=?",
+            personId,
+            existing.id,
+          );
+          attributed++;
+        }
+        return;
+      }
+      s.run(
+        "INSERT INTO access_events VALUES(?,?,?,?,?,?,?,?,?)",
+        randomUUID(),
+        deviceId,
+        personId,
+        relay?.id ?? null,
+        e.remoteId,
+        e.occurredAt,
+        e.outcome,
+        "real",
+        keys[i],
+      );
+      added++;
+      if (personId) attributed++;
+    });
     const summary = {
       read: read.items.length,
       added,
+      attributed,
+      expired,
       pages: read.pages,
       complete: read.complete,
       stoppedBy: read.stoppedBy,
+      automatic: actor === null,
     };
-    s.audit(actor, "events.collect.real", deviceId, summary);
+    // Automatic runs without news are not worth an immutable audit row every few minutes.
+    if (actor !== null || added || attributed)
+      s.audit(actor, "events.collect.real", deviceId, summary);
+    s.run("UPDATE devices SET last_contact=? WHERE id=?", now(), deviceId);
     s.run(
       "INSERT INTO diagnostics VALUES(?,?,?,?,?)",
       randomUUID(),
@@ -868,15 +1008,26 @@ export async function collectEvents(
       JSON.stringify({ source: "real", success: true, ...summary }),
       now(),
     );
+    return summary;
   });
   return {
     count: s.get(
       "SELECT COUNT(*) n FROM access_events WHERE device_id=?",
       deviceId,
     )!.n,
-    read: read.items.length,
+    read: result.read,
     added,
-    complete: read.complete,
+    attributed,
+    expired,
+    complete: result.complete,
+    oldest: read.items.reduce<string | null>(
+      (m, e) => (m === null || e.occurredAt < m ? e.occurredAt : m),
+      null,
+    ),
+    newest: read.items.reduce<string | null>(
+      (m, e) => (m === null || e.occurredAt > m ? e.occurredAt : m),
+      null,
+    ),
   };
 }
 export function seedDemo(s: Store, secrets: Secrets) {
