@@ -9,6 +9,7 @@ import {
 } from "../../../packages/fanvil-core/src/index.ts";
 import {
   parseCredentialsPage,
+  parseLogCardsPage,
   parseLogsPage,
   parseUserlist,
 } from "../../../packages/fanvil-core/src/manual.ts";
@@ -624,8 +625,168 @@ export function reconcile(
     }
     s.run("UPDATE staging_batches SET status='applied' WHERE id=?", batchId);
     s.audit(actor, "import.reconcile", batchId, result);
+    observedGroup(s, b.device_id, actor);
   });
   return { ...batchView(s, batchId), result };
+}
+// What the device already grants: one local group per device whose members are the people
+// owning credentials observed there, with a rule on every relay of the device. The userlist and
+// card_info do not state a usable relay, so all relays are assumed (exact for 1-relay models).
+// Additive: never removes members or rules the operator changed afterwards.
+export function observedGroup(s: Store, deviceId: string, actor: string) {
+  const device = required(s, "devices", deviceId);
+  let groupId = s.get(
+    "SELECT group_id FROM device_groups WHERE device_id=?",
+    deviceId,
+  )?.group_id as string | undefined;
+  let createdGroup = false;
+  if (!groupId) {
+    groupId = randomUUID();
+    createdGroup = true;
+    s.run(
+      "INSERT INTO access_groups VALUES(?,?,?)",
+      groupId,
+      "Accesso rilevato · " + device.name,
+      "Generato dall’import: persone le cui credenziali sono presenti sul dispositivo." +
+        (device.model === "i62"
+          ? " Il dispositivo non indica il relay: assegnati entrambi, correggere se necessario."
+          : ""),
+    );
+    s.run("INSERT INTO device_groups VALUES(?,?)", deviceId, groupId);
+  }
+  let rules = 0;
+  if (createdGroup)
+    for (const relay of s.all(
+      "SELECT id FROM relays WHERE device_id=?",
+      deviceId,
+    )) {
+      s.run(
+        "INSERT INTO access_rules VALUES(?,?,?,?,?)",
+        randomUUID(),
+        null,
+        groupId,
+        deviceId,
+        relay.id,
+      );
+      rules++;
+    }
+  let members = 0;
+  for (const p of s.all(
+    "SELECT DISTINCT c.person_id FROM device_credentials k JOIN credentials c ON c.id=k.credential_id WHERE k.device_id=? AND k.state IN ('observed','synced')",
+    deviceId,
+  ))
+    members += Number(
+      s.run(
+        "INSERT OR IGNORE INTO group_memberships VALUES(?,?)",
+        groupId,
+        p.person_id,
+      ).changes,
+    );
+  s.audit(actor, "group.observed", groupId, { deviceId, members, rules });
+  return { groupId, members, rules, created: createdGroup };
+}
+// Card capture: the operator swipes a new card on the reader; the device logs the attempt and
+// we read the card number back from the open-door log. Read only: nothing is written on the
+// device. A baseline of log ids taken at start isolates new swipes from device clock skew.
+const captures = new Map<
+  string,
+  { deviceId: string; baseline: Set<string>; startedAt: number; demo: boolean }
+>();
+const CAPTURE_TTL = 10 * 60_000;
+async function readLogCards(reader: DeviceReader) {
+  return readAllPages((page) =>
+    reader("eventsRead", page).then((r) =>
+      parsed("device_log", r.body, () => parseLogCardsPage(r.body)),
+    ),
+  );
+}
+export async function startCardCapture(
+  s: Store,
+  deviceId: string,
+  actor: string,
+  reader?: DeviceReader,
+) {
+  const d = required(s, "devices", deviceId);
+  for (const [k, v] of captures)
+    if (Date.now() - v.startedAt > CAPTURE_TTL) captures.delete(k);
+  let baseline = new Set<string>(),
+    complete = true;
+  if (d.mode !== "demo") {
+    if (!reader) fail("Lettura reale non disponibile", 409);
+    const log = await readLogCards(reader);
+    baseline = new Set(log.items.map((e) => e.remoteId));
+    complete = log.complete;
+  }
+  const captureId = randomUUID();
+  captures.set(captureId, {
+    deviceId,
+    baseline,
+    startedAt: Date.now(),
+    demo: d.mode === "demo",
+  });
+  s.audit(actor, "card.capture.start", deviceId, { logEntries: baseline.size });
+  return { captureId, logEntries: baseline.size, complete };
+}
+export async function pollCardCapture(
+  s: Store,
+  secrets: Secrets,
+  captureId: string,
+  actor: string,
+  reader?: DeviceReader,
+) {
+  const c = captures.get(captureId);
+  if (!c || Date.now() - c.startedAt > CAPTURE_TTL)
+    fail("Lettura scaduta o inesistente: riavviarla", 404);
+  let entries: ReturnType<typeof parseLogCardsPage>["items"];
+  let complete = true;
+  if (c.demo) {
+    entries =
+      Date.now() - c.startedAt > 3000
+        ? [
+            {
+              remoteId: "demo-capture",
+              occurredAt: now(),
+              outcome: "denied",
+              relayNumber: 1,
+              card: "DE40" + String(c.startedAt % 10000).padStart(4, "0"),
+              extraShape: null,
+              fields: [],
+            },
+          ]
+        : [];
+  } else {
+    if (!reader) fail("Lettura reale non disponibile", 409);
+    const log = await readLogCards(reader);
+    entries = log.items.filter((e) => !c.baseline.has(e.remoteId));
+    complete = log.complete;
+  }
+  const cards = entries
+    .filter((e) => e.card)
+    .map((e) => {
+      const fp = secrets.fingerprint("rfid", e.card!);
+      const known = s.get(
+        "SELECT c.id,p.name FROM credentials c JOIN people p ON p.id=c.person_id WHERE c.fingerprint=?",
+        fp,
+      );
+      return {
+        value: e.card!,
+        masked: masked("rfid", e.card!),
+        occurredAt: e.occurredAt,
+        outcome: e.outcome,
+        knownPerson: known?.name ?? null,
+      };
+    });
+  const unrecognized = entries
+    .filter((e) => !e.card)
+    .map((e) => ({
+      occurredAt: e.occurredAt,
+      outcome: e.outcome,
+      extraShape: e.extraShape,
+      fields: e.fields,
+    }));
+  if (cards.length)
+    s.audit(actor, "card.capture.found", c.deviceId, { cards: cards.length });
+  return { newEntries: entries.length, cards, unrecognized, complete };
 }
 function collectDemoEvents(s: Store, deviceId: string, actor: string) {
   const relays = s.all(

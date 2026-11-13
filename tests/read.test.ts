@@ -363,3 +363,104 @@ describe("Applicazione dell'importazione", () => {
     ).toEqual(["Carla Demo"]);
   });
 });
+import { cardFromLogEntry } from "../packages/fanvil-core/src/manual.ts";
+import {
+  observedGroup,
+  startCardCapture,
+  pollCardCapture,
+} from "../apps/api/src/services.ts";
+describe("Gruppo accessi rilevati", () => {
+  it("dopo la riconciliazione crea un gruppo per dispositivo con membri e permessi su ogni relay", async () => {
+    const s = new Store(":memory:");
+    const deviceId = realDevice(s, "i62");
+    const { reader } = fakeFirmware({
+      cards: [
+        { name: "Anna", cardNumber: "SYNTH-A" },
+        { name: "Bruno", cardNumber: "SYNTH-B" },
+      ],
+    });
+    const batch = await stage(s, secrets, deviceId, "admin", reader);
+    reconcile(s, batch.id, {}, "admin");
+    const group = s.get(
+      "SELECT g.* FROM device_groups d JOIN access_groups g ON g.id=d.group_id WHERE d.device_id=?",
+      deviceId,
+    )!;
+    expect(group.name).toBe("Accesso rilevato · Reale");
+    expect(
+      s.all("SELECT * FROM group_memberships WHERE group_id=?", group.id),
+    ).toHaveLength(2);
+    expect(
+      s.all("SELECT * FROM access_rules WHERE group_id=?", group.id),
+    ).toHaveLength(2);
+    // Idempotent: a second run adds nothing and keeps one group.
+    const again = observedGroup(s, deviceId, "admin");
+    expect(again).toMatchObject({ created: false, members: 0, rules: 0 });
+    expect(s.all("SELECT * FROM access_groups")).toHaveLength(1);
+  });
+});
+describe("Lettura nuova tessera dal log", () => {
+  it("riconosce solo forme esplicite di numero tessera e mai i PIN", () => {
+    expect(cardFromLogEntry({ extra: "C:12AB34CD" })).toBe("12AB34CD");
+    expect(cardFromLogEntry({ extra: "0012345678" })).toBe("0012345678");
+    expect(cardFromLogEntry({ extraJson: '{"cardNumber":"99887766"}' })).toBe(
+      "99887766",
+    );
+    expect(cardFromLogEntry({ extra: "P:123456" })).toBeNull();
+    expect(cardFromLogEntry({ extra: "Mario Rossi" })).toBeNull();
+    expect(cardFromLogEntry({})).toBeNull();
+  });
+  it("restituisce solo le tessere passate dopo l'avvio, senza scritture", async () => {
+    const s = new Store(":memory:");
+    const deviceId = realDevice(s, "i60K");
+    const logs: any[] = [
+      {
+        id: 1,
+        relay: 1,
+        openResult: 0,
+        openTime: 1700000000,
+        extra: "C:11111111",
+      },
+    ];
+    const calls: string[] = [];
+    const reader: DeviceReader = async (op, page) => {
+      calls.push(op);
+      return {
+        status: 200,
+        body: { code: "200", data: logs.slice((page - 1) * 100, page * 100) },
+      };
+    };
+    const start = await startCardCapture(s, deviceId, "admin", reader);
+    expect(start.logEntries).toBe(1);
+    logs.push({
+      id: 2,
+      relay: 1,
+      openResult: 1,
+      openTime: 1700000100,
+      extra: "C:22223333",
+    });
+    logs.push({
+      id: 3,
+      relay: 1,
+      openResult: 1,
+      openTime: 1700000101,
+      extra: "P:999999",
+    });
+    const r = await pollCardCapture(
+      s,
+      secrets,
+      start.captureId,
+      "admin",
+      reader,
+    );
+    expect(r.cards).toEqual([
+      expect.objectContaining({
+        value: "22223333",
+        outcome: "denied",
+        knownPerson: null,
+      }),
+    ]);
+    expect(r.unrecognized).toHaveLength(1);
+    expect(JSON.stringify(r.unrecognized)).not.toContain("999999");
+    expect(calls.every((c) => c === "eventsRead")).toBe(true);
+  });
+});

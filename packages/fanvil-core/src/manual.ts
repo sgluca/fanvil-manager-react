@@ -213,3 +213,89 @@ export function parseUserlist(body: unknown) {
     pin: col(r, "Password") === "*" ? "" : col(r, "Password"),
   }));
 }
+
+// Card capture from the open-door log (read only). The manual documents `extra`/`extraJson` but
+// not their content for card swipes: we accept only explicit card shapes and never PINs ("P:").
+const logCardEntry = z
+  .object({
+    id: scalar,
+    relay: scalar.optional(),
+    openResult: scalar.optional(),
+    openTime: scalar.optional(),
+    openType: scalar.optional(),
+    extra: z.unknown().optional(),
+    extraJson: z.unknown().optional(),
+  })
+  .loose();
+const logCardResponse = z.object({
+  code: scalar.optional(),
+  data: z.array(logCardEntry),
+  total: scalar.optional(),
+});
+const cardKeys = ["cardNumber", "CardNumber", "card", "cardNo", "CardNo", "IC"];
+const cardToken = /^[0-9A-Fa-f]{4,32}$/;
+export function cardFromLogEntry(
+  entry: Record<string, unknown>,
+): string | null {
+  for (const raw of [entry.extraJson, entry.extra]) {
+    let v: unknown = raw;
+    if (typeof v === "string" && v.trim().startsWith("{"))
+      try {
+        v = JSON.parse(v);
+      } catch {
+        /* not JSON */
+      }
+    if (v && typeof v === "object")
+      for (const k of cardKeys) {
+        const c = String((v as any)[k] ?? "").trim();
+        if (cardToken.test(c)) return c;
+      }
+    if (typeof v === "string") {
+      const t = v.trim();
+      if (/^P\s*[:=]/i.test(t)) continue; // PIN entry: never a card
+      const m = /^(?:C|CARD|IC|ID|RFID)\s*[:=]\s*([0-9A-Fa-f]{4,32})$/i.exec(t);
+      if (m) return m[1];
+      if (cardToken.test(t)) return t;
+    }
+  }
+  for (const k of cardKeys) {
+    const c = String(entry[k] ?? "").trim();
+    if (cardToken.test(c)) return c;
+  }
+  return null;
+}
+// Shape of an unrecognized `extra` without its value: prefix letters and length only.
+function extraShape(entry: Record<string, unknown>) {
+  const v = entry.extra ?? entry.extraJson;
+  if (v === undefined || v === null || v === "") return null;
+  if (typeof v !== "string") return typeof v;
+  const prefix = /^([A-Za-z]{1,4})\s*[:=]/.exec(v.trim())?.[1] ?? "";
+  return (prefix ? prefix + ":" : "") + "testo di " + v.length + " caratteri";
+}
+export function parseLogCardsPage(body: unknown) {
+  if (emptyList(body, "data")) return { items: [], total: 0 };
+  const r = logCardResponse.parse(body);
+  return {
+    items: r.data.map((e) => {
+      const seconds = Number(e.openTime);
+      return {
+        remoteId: String(e.id),
+        occurredAt:
+          Number.isFinite(seconds) && seconds > 0 && seconds < 4102444800
+            ? new Date(seconds * 1000).toISOString()
+            : null,
+        outcome:
+          String(e.openResult) === "0"
+            ? "granted"
+            : String(e.openResult) === "1"
+              ? "denied"
+              : "unknown",
+        relayNumber: [1, 2].includes(Number(e.relay)) ? Number(e.relay) : null,
+        card: cardFromLogEntry(e),
+        extraShape: extraShape(e),
+        fields: Object.keys(e).slice(0, 20),
+      };
+    }),
+    total: totalOf(r.total),
+  };
+}

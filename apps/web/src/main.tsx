@@ -211,6 +211,49 @@ function App() {
     items.map((v) => ({ value: v.id, label: v[label] }));
   const nameOf = (items: Item[], key: string) =>
     items.find((i) => i.id === key)?.name ?? "—";
+  // Device/relay reachable by a person through direct rules or group memberships.
+  const accessOf = (personId: string) => {
+    const groupIds = groups
+      .filter((g) => g.members.some((m: Item) => m.id === personId))
+      .map((g) => g.id);
+    const seen = new Set<string>();
+    return rules
+      .filter(
+        (r) =>
+          r.person_id === personId ||
+          (r.group_id && groupIds.includes(r.group_id)),
+      )
+      .filter((r) => !seen.has(r.relay_id) && seen.add(r.relay_id))
+      .map((r) => {
+        const d = devices.find((x) => x.id === r.device_id);
+        const relay = d?.relays.find((l: Item) => l.id === r.relay_id);
+        return {
+          key: r.relay_id,
+          label:
+            (d?.name ?? "—") +
+            (d && d.relays.length > 1 ? " / " + (relay?.name ?? "") : ""),
+          via: r.group_id ? nameOf(groups, r.group_id) : null,
+        };
+      });
+  };
+  const AccessBadges = ({ personId }: { personId: string }) => {
+    const list = accessOf(personId);
+    return list.length ? (
+      <>
+        {list.map((a) => (
+          <Badge key={a.key} tone="green">
+            <span
+              title={a.via ? "tramite gruppo " + a.via : "permesso diretto"}
+            >
+              {a.label}
+            </span>
+          </Badge>
+        ))}
+      </>
+    ) : (
+      <span className="muted">Nessun permesso</span>
+    );
+  };
   const filtered = (items: Item[]) =>
     items.filter((r) =>
       String(r.name ?? r.person_name ?? r.masked ?? "")
@@ -1104,6 +1147,59 @@ function App() {
                         >
                           Importa
                         </button>
+                        <button
+                          onClick={() =>
+                            confirm(
+                              "Gruppo accessi rilevati",
+                              "Crea o aggiorna il gruppo «Accesso rilevato · " +
+                                d.name +
+                                "» con tutte le persone le cui credenziali sono state importate da questo dispositivo, e un permesso su ogni relay. Solo locale: nulla viene scritto sul citofono. Non rimuove membri o permessi modificati a mano.",
+                              async () => {
+                                const r = await api(
+                                  "/devices/" + d.id + "/observed-group",
+                                  "POST",
+                                  { confirm: true },
+                                );
+                                return {
+                                  notice:
+                                    (r.created
+                                      ? "Gruppo creato"
+                                      : "Gruppo aggiornato") +
+                                    ": " +
+                                    r.members +
+                                    " persone aggiunte" +
+                                    (r.rules
+                                      ? ", " + r.rules + " permessi relay"
+                                      : ""),
+                                };
+                              },
+                            )
+                          }
+                        >
+                          Gruppo accessi
+                        </button>
+                        {(d.mode === "demo" || admin) && (
+                          <button
+                            onClick={() =>
+                              setDetail({
+                                title: "Leggi nuova tessera · " + d.name,
+                                content: (
+                                  <CardCapture
+                                    device={d}
+                                    people={people}
+                                    api={api}
+                                    onSaved={(m) => {
+                                      setNotice(m);
+                                      void reload();
+                                    }}
+                                  />
+                                ),
+                              })
+                            }
+                          >
+                            Leggi nuova tessera
+                          </button>
+                        )}
                         <button onClick={() => deviceForm(d)}>Modifica</button>
                       </>
                     )}
@@ -1154,6 +1250,7 @@ function App() {
                     <th>Persona</th>
                     <th>Note</th>
                     <th>Credenziali</th>
+                    <th>Apre</th>
                     <th>Stato</th>
                     <th>Azioni</th>
                   </tr>
@@ -1170,6 +1267,9 @@ function App() {
                       <td>{p.notes || "—"}</td>
                       <td>
                         {credentials.filter((c) => c.person_id === p.id).length}
+                      </td>
+                      <td>
+                        <AccessBadges personId={p.id} />
                       </td>
                       <td>
                         <Badge tone={p.active ? "green" : "neutral"}>
@@ -1218,6 +1318,7 @@ function App() {
                     <tr>
                       <th>Persona</th>
                       <th>Tipo / Valore</th>
+                      <th>Apre</th>
                       <th>Scadenza</th>
                       <th>Stato locale</th>
                       <th>Sincronizzazione</th>
@@ -1235,6 +1336,13 @@ function App() {
                           <Badge>{c.kind.toUpperCase()}</Badge>{" "}
                           <code>{c.masked}</code>
                         </td>
+                        <td>
+                          {c.revoked ? (
+                            <span className="muted">Revocata</span>
+                          ) : (
+                            <AccessBadges personId={c.person_id} />
+                          )}
+                        </td>
                         <td>{c.expires_at ? date(c.expires_at) : "Nessuna"}</td>
                         <td>
                           <Badge tone={c.revoked ? "amber" : "green"}>
@@ -1250,7 +1358,12 @@ function App() {
                             .filter((k: Item) => k.credential_id === c.id)
                             .map((k: Item) => (
                               <Badge key={k.id}>
-                                {nameOf(devices, k.device_id)}: {k.state}
+                                {nameOf(devices, k.device_id)}:{" "}
+                                {k.state === "observed"
+                                  ? "presente sul dispositivo"
+                                  : k.state === "synced"
+                                    ? "sincronizzata"
+                                    : k.state}
                               </Badge>
                             ))}
                           {!(data["device-credentials"] ?? []).some(
@@ -2223,6 +2336,187 @@ function App() {
           <div className="detail-content">{detail.content}</div>
           <button onClick={() => setDetail(null)}>Chiudi</button>
         </Dialog>
+      )}
+    </div>
+  );
+}
+// Reads a new card's number from the device open-door log after the operator swipes it.
+// Read only: the device is not put in any special mode and nothing is written to it.
+function CardCapture({
+  device,
+  people,
+  api,
+  onSaved,
+}: {
+  device: Item;
+  people: Item[];
+  api: (path: string, method?: string, body?: unknown) => Promise<any>;
+  onSaved: (message: string) => void;
+}) {
+  const [captureId, setCaptureId] = useState(""),
+    [state, setState] = useState<"idle" | "starting" | "waiting" | "done">(
+      "idle",
+    ),
+    [result, setResult] = useState<Item | null>(null),
+    [error, setError] = useState(""),
+    [attempts, setAttempts] = useState(0),
+    [personId, setPersonId] = useState(people[0]?.id ?? ""),
+    [saved, setSaved] = useState("");
+  const base = "/devices/" + device.id + "/card-capture";
+  const start = async () => {
+    setError("");
+    setResult(null);
+    setSaved("");
+    setState("starting");
+    try {
+      const r = await api(base, "POST", { confirm: true });
+      setCaptureId(r.captureId);
+      setAttempts(0);
+      setState("waiting");
+    } catch (e) {
+      setError((e as Error).message);
+      setState("idle");
+    }
+  };
+  const poll = useCallback(async () => {
+    try {
+      const r = await api(base + "/" + captureId, "POST", { confirm: true });
+      setResult(r);
+      setAttempts((a) => a + 1);
+      if (r.cards.length) setState("done");
+    } catch (e) {
+      setError((e as Error).message);
+      setState("idle");
+    }
+  }, [api, base, captureId]);
+  useEffect(() => {
+    if (state !== "waiting") return;
+    if (attempts >= 24) {
+      setState("done");
+      return;
+    }
+    const t = setTimeout(() => void poll(), 5000);
+    return () => clearTimeout(t);
+  }, [state, attempts, poll]);
+  const save = async (value: string) => {
+    setError("");
+    try {
+      await api("/credentials", "POST", {
+        personId,
+        kind: "rfid",
+        value,
+        readability: "readable",
+        expiresAt: null,
+      });
+      const m =
+        "Tessera salvata per " +
+        (people.find((p) => p.id === personId)?.name ?? "la persona");
+      setSaved(m);
+      onSaved(m);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  return (
+    <div className="card-capture">
+      {error && (
+        <div role="alert" className="alert error">
+          {error}
+        </div>
+      )}
+      <ol>
+        <li>Premi «Avvia lettura»: viene letto il log aperture attuale.</li>
+        <li>
+          Passa la nuova tessera sul lettore di <strong>{device.name}</strong>{" "}
+          (verrà rifiutata: è normale).
+        </li>
+        <li>
+          Il numero viene letto dal log aperture, senza scrivere nulla sul
+          citofono. Controllo automatico ogni 5 secondi per 2 minuti.
+        </li>
+      </ol>
+      {state === "idle" && (
+        <button className="primary" onClick={() => void start()}>
+          Avvia lettura
+        </button>
+      )}
+      {state === "starting" && <p>Lettura del log in corso…</p>}
+      {state === "waiting" && (
+        <p>
+          <strong>Passa ora la tessera sul lettore.</strong> In attesa…
+          (controllo {attempts + 1}/24){" "}
+          <button onClick={() => void poll()}>Controlla adesso</button>
+        </p>
+      )}
+      {result && !result.cards.length && state === "done" && (
+        <p>Nessuna tessera rilevata nel tempo previsto.</p>
+      )}
+      {result?.cards.map((c: Item, i: number) => (
+        <div className="panel" key={i}>
+          <p>
+            Codice tessera: <code className="card-code">{c.value}</code>
+            <br />
+            <small>
+              {c.occurredAt ? date(c.occurredAt) : "Ora non disponibile"} ·{" "}
+              {c.outcome === "denied"
+                ? "rifiutata"
+                : c.outcome === "granted"
+                  ? "accettata"
+                  : "esito sconosciuto"}
+            </small>
+          </p>
+          {c.knownPerson ? (
+            <p>
+              Tessera già registrata per <strong>{c.knownPerson}</strong>.
+            </p>
+          ) : people.length ? (
+            <div className="form-fields">
+              <label>
+                Assegna a persona
+                <select
+                  aria-label="Assegna a persona"
+                  value={personId}
+                  onChange={(e) => setPersonId(e.target.value)}
+                >
+                  {people.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="primary"
+                disabled={!!saved}
+                onClick={() => void save(c.value)}
+              >
+                Salva come credenziale RFID
+              </button>
+              {saved && (
+                <small>
+                  {saved}. Applicala al citofono con la sincronizzazione.
+                </small>
+              )}
+            </div>
+          ) : (
+            <p className="muted">Crea prima una persona per assegnarla.</p>
+          )}
+        </div>
+      ))}
+      {!!result?.unrecognized.length && (
+        <div className="alert">
+          {result.unrecognized.length} nuovi eventi nel log senza un numero di
+          tessera riconoscibile. Formato del campo «extra»:{" "}
+          {result.unrecognized
+            .map((u: Item) => u.extraShape ?? "assente")
+            .join(", ")}
+          . Campi: {result.unrecognized[0].fields.join(", ")}. Se il firmware
+          non registra il numero delle tessere sconosciute, usa la modalità
+          «emissione carte» dall’interfaccia web del citofono e poi «Importa».
+        </div>
+      )}
+      {(state === "done" || result?.cards.length) && (
+        <button onClick={() => void start()}>Nuova lettura</button>
       )}
     </div>
   );
