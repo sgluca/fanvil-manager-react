@@ -6,6 +6,7 @@ import {
   PAGE_SIZE,
   readAllPages,
   readSpec,
+  deviceDateTime,
 } from "../packages/fanvil-core/src/index.ts";
 import {
   insertDevice,
@@ -61,6 +62,20 @@ describe("Lettura paginata", () => {
     expect(readSpec("cardsRead", 1).body.card.index).toBe("1-100");
     expect(readSpec("cardsRead", 3).body.card.index).toBe("201-300");
     expect(readSpec("eventsRead", 2).body.deviceLog.index).toBe("101-200");
+    expect(
+      readSpec("eventsRead", 1, {
+        datetime: "2026.03.29 10:00:00-2026.11.14 10:00:00",
+      }).body.deviceLog,
+    ).toEqual({
+      index: "1-100",
+      datetime: "2026.03.29 10:00:00-2026.11.14 10:00:00",
+    });
+    expect(() =>
+      readSpec("eventsRead", 1, { datetime: "2026-03-29" }),
+    ).toThrow();
+    expect(deviceDateTime(new Date("2026-07-01T10:00:00Z"))).toBe(
+      "2026.07.01 12:00:00",
+    );
     expect(readSpec("cardsRead", 2).body.type).toEqual({
       cmd: "get",
       condition: "index",
@@ -361,6 +376,83 @@ describe("Eventi reali", () => {
     );
     expect(r).toMatchObject({ read: 2, added: 0, expired: 1, count: 1 });
   });
+  // Firmware that ignores the index window and always answers with the first 100 events
+  // (oldest first), optionally honoring the documented datetime range in local time.
+  const firstPageOnly =
+    (logs: () => any[], range: "honor" | "ignore" | "reject"): DeviceReader =>
+    async (_op, _page, options) => {
+      if (options?.datetime && range === "reject") throw new Error("400");
+      const from =
+        options?.datetime && range === "honor"
+          ? options.datetime.split("-")[0]
+          : null;
+      const data = logs()
+        .filter(
+          (l) =>
+            !from ||
+            deviceDateTime(new Date(Number(l.openTime) * 1000)) >= from,
+        )
+        .slice(0, PAGE_SIZE)
+        .map((l, i) => ({ ...l, id: String(i + 1) }));
+      return { status: 200, body: { code: "200", data, total: "100" } };
+    };
+  it("con indice ignorato percorre il log per intervallo di date", async () => {
+    const s = new Store(":memory:");
+    const id = realDevice(s);
+    const base = Math.floor(Date.now() / 1000) - 86400 * 20;
+    let logs = Array.from({ length: 350 }, (_, i) => ({
+      relay: "1",
+      openResult: "0",
+      // Three identical events in the same second across the first page boundary.
+      openTime: String(base + (i >= 99 && i <= 101 ? 99 : i) * 600),
+    }));
+    let calls = 0;
+    const inner = firstPageOnly(() => logs, "honor");
+    const reader: DeviceReader = (op, page, o) => {
+      calls++;
+      return inner(op, page, o);
+    };
+    expect(await collectEvents(s, id, "actor", reader)).toMatchObject({
+      read: 350,
+      added: 350,
+      complete: true,
+      datetimeUnsupported: false,
+    });
+    logs = [
+      ...logs,
+      { relay: "2", openResult: "1", openTime: String(base + 400 * 600) },
+    ];
+    calls = 0;
+    expect(await collectEvents(s, id, "actor", reader)).toMatchObject({
+      added: 1,
+      complete: true,
+    });
+    // Incremental: the walk restarts from the newest stored event, not from the beginning.
+    expect(calls).toBeLessThan(6);
+    expect(
+      s.get("SELECT COUNT(*) n FROM access_events WHERE device_id=?", id)!.n,
+    ).toBe(351);
+  });
+  it("segnala lettura incompleta se il filtro per data è ignorato o rifiutato", async () => {
+    const logs = Array.from({ length: 250 }, (_, i) => log(i));
+    for (const range of ["ignore", "reject"] as const) {
+      const s = new Store(":memory:");
+      const id = realDevice(s);
+      expect(
+        await collectEvents(
+          s,
+          id,
+          "actor",
+          firstPageOnly(() => logs, range),
+        ),
+      ).toMatchObject({
+        read: 100,
+        added: 100,
+        complete: false,
+        datetimeUnsupported: true,
+      });
+    }
+  });
   it("il demo resta sincrono e non usa il lettore", async () => {
     const s = new Store(":memory:");
     const id = insertDevice(s, secrets, {
@@ -589,6 +681,42 @@ describe("Lettura nuova tessera dal log", () => {
     expect(r.unrecognized).toHaveLength(1);
     expect(JSON.stringify(r.unrecognized)).not.toContain("999999");
     expect(calls.every((c) => c === "eventsRead")).toBe(true);
+  });
+  it("con indice ignorato trova la tessera nuova tramite intervallo di date", async () => {
+    const s = new Store(":memory:");
+    const deviceId = realDevice(s, "i60K");
+    const old = Math.floor(Date.now() / 1000) - 86400 * 300;
+    const logs: any[] = Array.from({ length: 150 }, (_, i) => ({
+      relay: 1,
+      openResult: 0,
+      openTime: old + i * 60,
+    }));
+    // Always the oldest 100 entries; the datetime range is honored (local time).
+    const reader: DeviceReader = async (_op, _page, o) => {
+      const from = o?.datetime?.split("-")[0];
+      const data = logs
+        .filter(
+          (l) => !from || deviceDateTime(new Date(l.openTime * 1000)) >= from,
+        )
+        .slice(0, 100)
+        .map((l, i) => ({ id: i + 1, ...l }));
+      return { status: 200, body: { code: "200", data, total: "100" } };
+    };
+    const start = await startCardCapture(s, secrets, deviceId, "admin", reader);
+    logs.push({
+      relay: 1,
+      openResult: 1,
+      openTime: Math.floor(Date.now() / 1000),
+      extra: "C:66667777",
+    });
+    const r = await pollCardCapture(
+      s,
+      secrets,
+      start.captureId,
+      "admin",
+      reader,
+    );
+    expect(r.cards.map((c) => c.value)).toEqual(["66667777"]);
   });
   it("riconosce la tessera nuova anche se l'id del log è la posizione nella finestra", async () => {
     const s = new Store(":memory:");

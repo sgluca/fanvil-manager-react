@@ -462,7 +462,7 @@ export async function buildApp(config: Config, existingStore?: Store) {
   const readerFor = (d: Row, actor: string | null): DeviceReader => {
     if (!d.secret) fail("Credenziali dispositivo mancanti", 409);
     const auth = secrets.decrypt(d.secret);
-    return async (operation, page) => {
+    return async (operation, page, options) => {
       if (d.model === "A10" && operation !== "deviceInfo")
         fail("Endpoint non supportato per A10 nel manuale 0.8.7", 409);
       try {
@@ -470,6 +470,7 @@ export async function buildApp(config: Config, existingStore?: Store) {
           { ...d, approved: !!d.approved, ...auth } as any,
           operation,
           page,
+          options,
         );
       } catch (error) {
         const failure = safeReadError(error);

@@ -134,14 +134,49 @@ export function isPagedOperation(
 ): operation is keyof typeof indexed {
   return Object.hasOwn(indexed, operation);
 }
-// Same documented request, with the index window replaced. Other fields are untouched.
-export function readSpec(operation: ReadOperation, page = 1) {
+export type ReadOptions = { datetime?: string };
+// "YYYY.MM.DD hh:mm:ss-YYYY.MM.DD hh:mm:ss", as in the collection's Open Door Log request.
+const DATETIME_RANGE =
+  /^\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}-\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}$/;
+// Device-local wall clock (Europe/Rome) in the documented datetime format.
+export function deviceDateTime(date: Date, timeZone = "Europe/Rome") {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .map((x) => [x.type, x.value]),
+  );
+  return `${p.year}.${p.month}.${p.day} ${p.hour}:${p.minute}:${p.second}`;
+}
+// Same documented request, with the index window (and, for the door log, the documented
+// datetime range) replaced. Other fields are untouched.
+export function readSpec(
+  operation: ReadOperation,
+  page = 1,
+  options: ReadOptions = {},
+) {
   const spec: { method: string; path: string; body?: any } = structuredClone(
     readRequests[operation],
   );
   if (isPagedOperation(operation) && spec.body)
     spec.body[indexed[operation]].index =
       (page - 1) * PAGE_SIZE + 1 + "-" + page * PAGE_SIZE;
+  if (options.datetime !== undefined) {
+    if (operation !== "eventsRead" || !DATETIME_RANGE.test(options.datetime))
+      throw new FanvilReadError(
+        "FANVIL_TARGET",
+        "Intervallo di date non valido per la lettura",
+      );
+    spec.body.deviceLog.datetime = options.datetime;
+  }
   return spec;
 }
 export type Target = {
@@ -258,6 +293,7 @@ export class FanvilHttpClient {
     target: Target,
     operation: ReadOperation,
     page = 1,
+    options: ReadOptions = {},
   ): Promise<{ status: number; body: unknown }> {
     if (!this.options.enabled)
       throw new FanvilReadError(
@@ -323,7 +359,7 @@ export class FanvilHttpClient {
           "Indirizzo fuori dalla LAN autorizzata: verificare FANVIL_ALLOWED_CIDRS; sono esclusi IP pubblici, loopback e link-local",
         );
       const address = addresses[0];
-      const spec = readSpec(operation, page);
+      const spec = readSpec(operation, page, options);
       const body =
         spec.body === undefined ? undefined : JSON.stringify(spec.body);
       return await new Promise((resolve, reject) => {

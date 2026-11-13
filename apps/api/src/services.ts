@@ -5,7 +5,10 @@ import {
   masked,
   assertRealWriteBlocked,
   readAllPages,
+  deviceDateTime,
+  PAGE_SIZE,
   type ReadOperation,
+  type ReadOptions,
 } from "../../../packages/fanvil-core/src/index.ts";
 import {
   parseCredentialsPage,
@@ -17,6 +20,7 @@ import { FanvilReadError } from "../../../packages/fanvil-core/src/errors.ts";
 export type DeviceReader = (
   operation: ReadOperation,
   page: number,
+  options?: ReadOptions,
 ) => Promise<{ status: number; body: unknown }>;
 import {
   capabilitiesForModel,
@@ -695,30 +699,76 @@ const captures = new Map<
   { deviceId: string; baseline: Set<string>; startedAt: number; demo: boolean }
 >();
 const CAPTURE_TTL = 10 * 60_000;
-async function readLogCards(secrets: Secrets, reader: DeviceReader) {
-  const log = await readAllPages(
-    (page) =>
-      reader("eventsRead", page).then((r) =>
-        parsed("device_log", r.body, () => parseLogCardsPage(r.body)),
-      ),
-    200,
-    true,
-  );
-  const seen = new Map<string, number>();
-  const keys = log.items.map((e) => {
-    const base = [
-      e.occurredAt,
-      e.relayNumber ?? 0,
-      e.outcome,
-      e.card
-        ? secrets.fingerprint("rfid", e.card).slice(0, 32)
-        : (e.extraShape ?? ""),
-    ].join("|");
-    const n = (seen.get(base) ?? 0) + 1;
-    seen.set(base, n);
-    return base + "#" + n;
-  });
-  return { ...log, keys };
+async function readLogCards(
+  secrets: Secrets,
+  reader: DeviceReader,
+  since: number,
+) {
+  const fetchPage = (page: number, datetime?: string) =>
+    reader("eventsRead", page, datetime ? { datetime } : undefined).then((r) =>
+      parsed("device_log", r.body, () => parseLogCardsPage(r.body)),
+    );
+  const log = await readAllPages((page) => fetchPage(page), 200, true);
+  type Entry = (typeof log.items)[number];
+  const keyed = (items: Entry[]) => {
+    const seen = new Map<string, number>();
+    return items.map((e) => {
+      const base = [
+        e.occurredAt,
+        e.relayNumber ?? 0,
+        e.outcome,
+        e.card
+          ? secrets.fingerprint("rfid", e.card).slice(0, 32)
+          : (e.extraShape ?? ""),
+      ].join("|");
+      const n = (seen.get(base) ?? 0) + 1;
+      seen.set(base, n);
+      return { e, key: base + "#" + n };
+    });
+  };
+  const byKey = new Map(keyed(log.items).map((x) => [x.key, x.e]));
+  let complete = log.complete;
+  // Firmware that ignores the index answers with the oldest page only: read the recent part
+  // of the log with the documented datetime range, from a fixed point before the capture
+  // started (same start for baseline and polls, so keys stay comparable).
+  if (log.items.length && log.items.length % PAGE_SIZE === 0) {
+    const end = deviceDateTime(new Date(Date.now() + 86400000));
+    let cursor = deviceDateTime(new Date(since - 2 * 3600000));
+    const recent: Entry[] = [];
+    complete = false;
+    for (let w = 0; w < 50; w++) {
+      let page: Awaited<ReturnType<typeof fetchPage>>;
+      try {
+        page = await fetchPage(1, cursor + "-" + end);
+      } catch (error) {
+        if (w === 0) break;
+        throw error;
+      }
+      if (
+        w === 0 &&
+        page.items.length >= PAGE_SIZE &&
+        JSON.stringify(page.items[0]) === JSON.stringify(log.items[0])
+      )
+        break; // datetime ignored
+      const last = recent.at(-1)?.occurredAt ?? "";
+      const fresh = page.items.filter(
+        (e) => !recent.length || (e.occurredAt ?? "") > last,
+      );
+      recent.push(...fresh);
+      const newest = recent.at(-1)?.occurredAt;
+      if (page.items.length < PAGE_SIZE || !fresh.length || !newest) {
+        complete = true;
+        break;
+      }
+      cursor = deviceDateTime(new Date(newest));
+    }
+    for (const x of keyed(recent)) byKey.set(x.key, x.e);
+  }
+  return {
+    items: [...byKey.values()],
+    keys: [...byKey.keys()],
+    complete,
+  };
 }
 export async function startCardCapture(
   s: Store,
@@ -730,11 +780,12 @@ export async function startCardCapture(
   const d = required(s, "devices", deviceId);
   for (const [k, v] of captures)
     if (Date.now() - v.startedAt > CAPTURE_TTL) captures.delete(k);
+  const startedAt = Date.now();
   let baseline = new Set<string>(),
     complete = true;
   if (d.mode !== "demo") {
     if (!reader) fail("Lettura reale non disponibile", 409);
-    const log = await readLogCards(secrets, reader);
+    const log = await readLogCards(secrets, reader, startedAt);
     baseline = new Set(log.keys);
     complete = log.complete;
   }
@@ -742,7 +793,7 @@ export async function startCardCapture(
   captures.set(captureId, {
     deviceId,
     baseline,
-    startedAt: Date.now(),
+    startedAt,
     demo: d.mode === "demo",
   });
   s.audit(actor, "card.capture.start", deviceId, { logEntries: baseline.size });
@@ -777,7 +828,7 @@ export async function pollCardCapture(
         : [];
   } else {
     if (!reader) fail("Lettura reale non disponibile", 409);
-    const log = await readLogCards(secrets, reader);
+    const log = await readLogCards(secrets, reader, c.startedAt);
     entries = log.items.filter((_, i) => !c.baseline.has(log.keys[i]));
     complete = log.complete;
   }
@@ -840,6 +891,7 @@ export type CollectOptions = {
   retentionDays?: number;
   secrets?: Secrets;
   maxPages?: number;
+  maxWindows?: number;
 };
 // Stable key from the event content, not from the device's `id` (which on some firmware is
 // only the position inside the returned window). Identical events in the same second are
@@ -926,14 +978,106 @@ export async function collectEvents(
     ? (kind: "rfid" | "pin", value: string) =>
         options.secrets!.fingerprint(kind, value)
     : undefined;
+  const fetchLog = (page: number, datetime?: string) =>
+    reader("eventsRead", page, datetime ? { datetime } : undefined).then((r) =>
+      parsed("device_log", r.body, () => parseLogsPage(r.body, fingerprint)),
+    );
   const read = await readAllPages(
-    (page) =>
-      reader("eventsRead", page).then((r) =>
-        parsed("device_log", r.body, () => parseLogsPage(r.body, fingerprint)),
-      ),
+    (page) => fetchLog(page),
     options.maxPages ?? 200,
     true,
   );
+  type LogEntry = (typeof read.items)[number];
+  // Merge of overlapping answers: every answer holds at most the real number of identical
+  // events (same second, relay, outcome), so the largest count seen is the right one.
+  const groups = new Map<string, LogEntry[]>();
+  const merge = (items: LogEntry[]) => {
+    const byKey = new Map<string, LogEntry[]>();
+    for (const e of items) {
+      const k = e.occurredAt + "|" + (e.relayNumber ?? 0) + "|" + e.outcome;
+      byKey.set(k, [...(byKey.get(k) ?? []), e]);
+    }
+    for (const [k, list] of byKey) {
+      const held = groups.get(k) ?? [];
+      if (list.length > held.length)
+        groups.set(k, [...held, ...list.slice(held.length)]);
+    }
+  };
+  merge(read.items);
+  // Firmware that ignores the index window always answers with the first page: walk the
+  // log forward with the documented datetime range, starting after the newest event held
+  // (or the newest already stored), until the device has nothing newer.
+  let windows = 0,
+    timeWalk = false,
+    walkRefused = false,
+    walkIgnored = false,
+    walkExhausted = true;
+  const newestOf = (items: LogEntry[]) =>
+    items.reduce<string | null>(
+      (m, e) => (m === null || e.occurredAt > m ? e.occurredAt : m),
+      null,
+    );
+  if (read.items.length && read.items.length % PAGE_SIZE === 0) {
+    timeWalk = true;
+    const stored = s.get(
+      "SELECT MAX(occurred_at) at FROM access_events WHERE device_id=? AND source='real'",
+      deviceId,
+    )?.at as string | null;
+    let cursor = [newestOf(read.items)!, stored ?? ""].sort().at(-1)!;
+    const end = deviceDateTime(new Date(Date.now() + 86400000));
+    const maxWindows = options.maxWindows ?? 500;
+    // Two hours of margin cover a device clock kept in UTC instead of Europe/Rome; without
+    // margin as a second try when more than a page of events falls inside the margin.
+    const margins = [2 * 3600000, 0];
+    for (;;) {
+      if (windows >= maxWindows) {
+        walkExhausted = false;
+        break;
+      }
+      let progressed = false,
+        full = false;
+      for (const margin of margins) {
+        const from = deviceDateTime(new Date(Date.parse(cursor) - margin));
+        let page: Awaited<ReturnType<typeof fetchLog>>;
+        try {
+          windows++;
+          page = await fetchLog(1, from + "-" + end);
+        } catch (error) {
+          // The range is documented but not verified on firmware: if the very first
+          // request is refused, keep what the index read returned.
+          if (windows === 1) {
+            walkRefused = true;
+            break;
+          }
+          throw error;
+        }
+        merge(page.items);
+        // Same first page as without a range: the firmware ignores the datetime filter.
+        if (
+          windows === 1 &&
+          page.items.length >= PAGE_SIZE &&
+          JSON.stringify(page.items[0]) === JSON.stringify(read.items[0])
+        )
+          walkIgnored = true;
+        const newest = newestOf(page.items);
+        if (newest && newest > cursor) {
+          cursor = newest;
+          progressed = true;
+          full = page.items.length >= PAGE_SIZE;
+          break;
+        }
+      }
+      if (!progressed || !full) break;
+    }
+  }
+  const items = [...groups.values()]
+    .flat()
+    .sort((a, b) =>
+      a.occurredAt < b.occurredAt ? -1 : a.occurredAt > b.occurredAt ? 1 : 0,
+    );
+  const complete = timeWalk
+    ? !walkRefused && !walkIgnored && walkExhausted
+    : read.complete;
   const cutoff = options.retentionDays
     ? new Date(Date.now() - options.retentionDays * 86400000).toISOString()
     : null;
@@ -943,12 +1087,12 @@ export async function collectEvents(
   const result = s.transaction(() => {
     migrateEventKeys(s, deviceId);
     const match = personMatcher(s);
-    const keys = eventKeys(deviceId, read.items, (e) => [
+    const keys = eventKeys(deviceId, items, (e) => [
       e.occurredAt,
       e.relayNumber,
       e.outcome,
     ]);
-    read.items.forEach((e, i) => {
+    items.forEach((e, i) => {
       if (cutoff && e.occurredAt < cutoff) {
         expired++;
         return;
@@ -987,12 +1131,15 @@ export async function collectEvents(
       if (personId) attributed++;
     });
     const summary = {
-      read: read.items.length,
+      read: items.length,
       added,
       attributed,
       expired,
       pages: read.pages,
-      complete: read.complete,
+      windows,
+      datetimeRefused: walkRefused,
+      datetimeIgnored: walkIgnored,
+      complete,
       stoppedBy: read.stoppedBy,
       automatic: actor === null,
     };
@@ -1020,11 +1167,13 @@ export async function collectEvents(
     attributed,
     expired,
     complete: result.complete,
-    oldest: read.items.reduce<string | null>(
+    windows,
+    datetimeUnsupported: walkRefused || walkIgnored,
+    oldest: items.reduce<string | null>(
       (m, e) => (m === null || e.occurredAt < m ? e.occurredAt : m),
       null,
     ),
-    newest: read.items.reduce<string | null>(
+    newest: items.reduce<string | null>(
       (m, e) => (m === null || e.occurredAt > m ? e.occurredAt : m),
       null,
     ),

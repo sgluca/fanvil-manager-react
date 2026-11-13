@@ -1861,7 +1861,9 @@ function App() {
                                   : "") +
                                 (c.complete
                                   ? ""
-                                  : ". ATTENZIONE: lettura forse incompleta"),
+                                  : c.datetimeUnsupported
+                                    ? ". ATTENZIONE: il dispositivo restituisce sempre gli stessi eventi e non accetta il filtro per data: lettura incompleta"
+                                    : ". ATTENZIONE: lettura forse incompleta"),
                             };
                           },
                         )
