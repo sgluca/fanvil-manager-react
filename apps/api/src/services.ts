@@ -5,7 +5,10 @@ import {
   masked,
   assertRealWriteBlocked,
   readAllPages,
+  deviceDateTime,
+  PAGE_SIZE,
   type ReadOperation,
+  type ReadOptions,
 } from "../../../packages/fanvil-core/src/index.ts";
 import {
   parseCredentialsPage,
@@ -17,6 +20,7 @@ import { FanvilReadError } from "../../../packages/fanvil-core/src/errors.ts";
 export type DeviceReader = (
   operation: ReadOperation,
   page: number,
+  options?: ReadOptions,
 ) => Promise<{ status: number; body: unknown }>;
 import {
   capabilitiesForModel,
@@ -840,6 +844,7 @@ export type CollectOptions = {
   retentionDays?: number;
   secrets?: Secrets;
   maxPages?: number;
+  maxWindows?: number;
 };
 // Stable key from the event content, not from the device's `id` (which on some firmware is
 // only the position inside the returned window). Identical events in the same second are
@@ -926,14 +931,106 @@ export async function collectEvents(
     ? (kind: "rfid" | "pin", value: string) =>
         options.secrets!.fingerprint(kind, value)
     : undefined;
+  const fetchLog = (page: number, datetime?: string) =>
+    reader("eventsRead", page, datetime ? { datetime } : undefined).then((r) =>
+      parsed("device_log", r.body, () => parseLogsPage(r.body, fingerprint)),
+    );
   const read = await readAllPages(
-    (page) =>
-      reader("eventsRead", page).then((r) =>
-        parsed("device_log", r.body, () => parseLogsPage(r.body, fingerprint)),
-      ),
+    (page) => fetchLog(page),
     options.maxPages ?? 200,
     true,
   );
+  type LogEntry = (typeof read.items)[number];
+  // Merge of overlapping answers: every answer holds at most the real number of identical
+  // events (same second, relay, outcome), so the largest count seen is the right one.
+  const groups = new Map<string, LogEntry[]>();
+  const merge = (items: LogEntry[]) => {
+    const byKey = new Map<string, LogEntry[]>();
+    for (const e of items) {
+      const k = e.occurredAt + "|" + (e.relayNumber ?? 0) + "|" + e.outcome;
+      byKey.set(k, [...(byKey.get(k) ?? []), e]);
+    }
+    for (const [k, list] of byKey) {
+      const held = groups.get(k) ?? [];
+      if (list.length > held.length)
+        groups.set(k, [...held, ...list.slice(held.length)]);
+    }
+  };
+  merge(read.items);
+  // Firmware that ignores the index window always answers with the first page: walk the
+  // log forward with the documented datetime range, starting after the newest event held
+  // (or the newest already stored), until the device has nothing newer.
+  let windows = 0,
+    timeWalk = false,
+    walkRefused = false,
+    walkIgnored = false,
+    walkExhausted = true;
+  const newestOf = (items: LogEntry[]) =>
+    items.reduce<string | null>(
+      (m, e) => (m === null || e.occurredAt > m ? e.occurredAt : m),
+      null,
+    );
+  if (read.items.length && read.items.length % PAGE_SIZE === 0) {
+    timeWalk = true;
+    const stored = s.get(
+      "SELECT MAX(occurred_at) at FROM access_events WHERE device_id=? AND source='real'",
+      deviceId,
+    )?.at as string | null;
+    let cursor = [newestOf(read.items)!, stored ?? ""].sort().at(-1)!;
+    const end = deviceDateTime(new Date(Date.now() + 86400000));
+    const maxWindows = options.maxWindows ?? 500;
+    // Two hours of margin cover a device clock kept in UTC instead of Europe/Rome; without
+    // margin as a second try when more than a page of events falls inside the margin.
+    const margins = [2 * 3600000, 0];
+    for (;;) {
+      if (windows >= maxWindows) {
+        walkExhausted = false;
+        break;
+      }
+      let progressed = false,
+        full = false;
+      for (const margin of margins) {
+        const from = deviceDateTime(new Date(Date.parse(cursor) - margin));
+        let page: Awaited<ReturnType<typeof fetchLog>>;
+        try {
+          windows++;
+          page = await fetchLog(1, from + "-" + end);
+        } catch (error) {
+          // The range is documented but not verified on firmware: if the very first
+          // request is refused, keep what the index read returned.
+          if (windows === 1) {
+            walkRefused = true;
+            break;
+          }
+          throw error;
+        }
+        merge(page.items);
+        // Same first page as without a range: the firmware ignores the datetime filter.
+        if (
+          windows === 1 &&
+          page.items.length >= PAGE_SIZE &&
+          JSON.stringify(page.items[0]) === JSON.stringify(read.items[0])
+        )
+          walkIgnored = true;
+        const newest = newestOf(page.items);
+        if (newest && newest > cursor) {
+          cursor = newest;
+          progressed = true;
+          full = page.items.length >= PAGE_SIZE;
+          break;
+        }
+      }
+      if (!progressed || !full) break;
+    }
+  }
+  const items = [...groups.values()]
+    .flat()
+    .sort((a, b) =>
+      a.occurredAt < b.occurredAt ? -1 : a.occurredAt > b.occurredAt ? 1 : 0,
+    );
+  const complete = timeWalk
+    ? !walkRefused && !walkIgnored && walkExhausted
+    : read.complete;
   const cutoff = options.retentionDays
     ? new Date(Date.now() - options.retentionDays * 86400000).toISOString()
     : null;
@@ -943,12 +1040,12 @@ export async function collectEvents(
   const result = s.transaction(() => {
     migrateEventKeys(s, deviceId);
     const match = personMatcher(s);
-    const keys = eventKeys(deviceId, read.items, (e) => [
+    const keys = eventKeys(deviceId, items, (e) => [
       e.occurredAt,
       e.relayNumber,
       e.outcome,
     ]);
-    read.items.forEach((e, i) => {
+    items.forEach((e, i) => {
       if (cutoff && e.occurredAt < cutoff) {
         expired++;
         return;
@@ -987,12 +1084,15 @@ export async function collectEvents(
       if (personId) attributed++;
     });
     const summary = {
-      read: read.items.length,
+      read: items.length,
       added,
       attributed,
       expired,
       pages: read.pages,
-      complete: read.complete,
+      windows,
+      datetimeRefused: walkRefused,
+      datetimeIgnored: walkIgnored,
+      complete,
       stoppedBy: read.stoppedBy,
       automatic: actor === null,
     };
@@ -1020,11 +1120,13 @@ export async function collectEvents(
     attributed,
     expired,
     complete: result.complete,
-    oldest: read.items.reduce<string | null>(
+    windows,
+    datetimeUnsupported: walkRefused || walkIgnored,
+    oldest: items.reduce<string | null>(
       (m, e) => (m === null || e.occurredAt < m ? e.occurredAt : m),
       null,
     ),
-    newest: read.items.reduce<string | null>(
+    newest: items.reduce<string | null>(
       (m, e) => (m === null || e.occurredAt > m ? e.occurredAt : m),
       null,
     ),
