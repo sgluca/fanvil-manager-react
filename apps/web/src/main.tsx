@@ -1912,15 +1912,36 @@ function App() {
                               .filter((i: Item) => !i.existingPersonId)
                               .map((i: Item) => ({
                                 key: i.id,
-                                label: i.name + " → persona",
+                                label:
+                                  i.name +
+                                  " " +
+                                  i.masked +
+                                  (i.candidates.length
+                                    ? " — nome già presente"
+                                    : "") +
+                                  " → persona",
                                 type: "select",
                                 options: [
                                   {
                                     value: "",
-                                    label:
-                                      "Crea nuova persona (nome non già presente)",
+                                    label: i.candidates.length
+                                      ? "Crea nuova persona (non possibile: nome già presente)"
+                                      : "Crea nuova persona",
                                   },
-                                  ...opts(people),
+                                  { value: "skip", label: "Non importare" },
+                                  // Same-name people first, never preselected: no automatic merge by name.
+                                  ...i.candidates.map((c: Item) => ({
+                                    value: c.id,
+                                    label: c.name + " (stesso nome)",
+                                  })),
+                                  ...opts(
+                                    people.filter(
+                                      (p) =>
+                                        !i.candidates.some(
+                                          (c: Item) => c.id === p.id,
+                                        ),
+                                    ),
+                                  ),
                                 ],
                               })),
                             {
@@ -1941,9 +1962,18 @@ function App() {
                               "/imports/" + b.id + "/reconcile",
                               "POST",
                               { confirm: true, mappings },
-                            );
+                            ).then((r) => ({
+                              notice:
+                                "Importazione applicata: " +
+                                r.result.people +
+                                " persone nuove, " +
+                                r.result.credentials +
+                                " credenziali, " +
+                                r.result.skipped +
+                                " voci saltate",
+                            }));
                           },
-                          "Se il nome esiste ma indica un’altra persona, crea prima una persona distinta e selezionala. Nessuna associazione automatica per nome.",
+                          "Per ogni voce: crea una nuova persona, associala a una persona esistente o non importarla. Carta e PIN della stessa riga del citofono finiscono sulla stessa persona. Nessuna associazione automatica per nome: se il nome esiste già, scegli la persona o salta la voce. Viene modificato solo il database locale, mai il citofono.",
                         )
                       }
                     >

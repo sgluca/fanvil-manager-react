@@ -67,7 +67,8 @@ export const relaySchema = z.object({ name: text });
 export const membershipSchema = z.object({ personId: id });
 export const reconciliationSchema = z.object({
   confirm: z.literal(true),
-  mappings: z.record(z.string(), id).default({}),
+  // Per staging item: an existing person id, or "skip" to leave that item out of this import.
+  mappings: z.record(z.string(), z.union([id, z.literal("skip")])).default({}),
 });
 export function canWrite(role: Role) {
   return role === "admin" || role === "operatore";
