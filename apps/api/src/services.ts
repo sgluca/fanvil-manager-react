@@ -61,6 +61,8 @@ function parsed<T>(label: string, body: unknown, fn: () => T): T {
 export function fail(message: string, statusCode = 400): never {
   throw Object.assign(Error(message), { statusCode });
 }
+const failItem = (message: string, statusCode: number) =>
+  fail(message, statusCode);
 export function required(store: Store, table: string, id: string) {
   const r = store.get(`SELECT * FROM ${table} WHERE id=?`, id);
   if (!r) fail("Elemento non trovato", 404);
@@ -512,13 +514,25 @@ export function reconcile(
   actor: string,
 ) {
   const b = required(s, "staging_batches", batchId);
-  if (b.status === "applied") return batchView(s, batchId);
+  if (b.status === "applied")
+    return {
+      ...batchView(s, batchId),
+      result: { people: 0, credentials: 0, skipped: 0 },
+    };
   const deviceMode = required(s, "devices", b.device_id).mode;
+  const result = { people: 0, credentials: 0, skipped: 0 };
   s.transaction(() => {
     for (const i of s.all(
       "SELECT * FROM staging_items WHERE batch_id=?",
       batchId,
     )) {
+      if (mappings[i.id] === "skip") {
+        result.skipped++;
+        continue;
+      }
+      // Every conflict names the item (name and masked value), so the operator knows what to fix.
+      const fail = (message: string, status: number) =>
+        failItem("«" + i.name + "» " + i.masked + ": " + message, status);
       // Items of one device row ("row:…#card", "row:…#pin") share one person.
       const personKey = String(i.remote_id).split("#")[0];
       const imported = s.get(
@@ -530,21 +544,29 @@ export function reconcile(
         ? s.get("SELECT * FROM credentials WHERE fingerprint=?", i.fingerprint)
         : undefined;
       if (imported && credential && imported.person_id !== credential.person_id)
-        fail("Identità remota e credenziale in conflitto", 409);
+        fail("identità remota e credenziale in conflitto", 409);
       const requested = mappings[i.id];
-      if (requested) required(s, "people", requested);
+      if (requested && !s.get("SELECT id FROM people WHERE id=?", requested))
+        fail("persona selezionata inesistente", 404);
       if (credential && requested && requested !== credential.person_id)
-        fail("Credenziale già associata: riconciliare manualmente", 409);
+        fail(
+          "credenziale già associata a un'altra persona: selezionare quella o saltare la voce",
+          409,
+        );
       if (imported && requested && requested !== imported.person_id)
-        fail("Identità remota già riconciliata", 409);
+        fail(
+          "voce già riconciliata con un'altra persona: selezionare quella o saltare la voce",
+          409,
+        );
       let personId = imported?.person_id ?? credential?.person_id ?? requested;
       if (!personId) {
         if (s.get("SELECT id FROM people WHERE name=?", i.name))
           fail(
-            "Nome già presente: scegliere la persona o creare una persona distinta e associarla",
+            "nome già presente: selezionare la persona esistente o saltare la voce",
             409,
           );
         personId = randomUUID();
+        result.people++;
         s.run(
           "INSERT INTO people VALUES(?,?,?,?,?,?)",
           personId,
@@ -570,6 +592,7 @@ export function reconcile(
         )?.credential_id;
       if (!credentialId && i.credential_kind) {
         credentialId = randomUUID();
+        result.credentials++;
         s.run(
           "INSERT INTO credentials VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
           credentialId,
@@ -600,9 +623,9 @@ export function reconcile(
       );
     }
     s.run("UPDATE staging_batches SET status='applied' WHERE id=?", batchId);
-    s.audit(actor, "import.reconcile", batchId);
+    s.audit(actor, "import.reconcile", batchId, result);
   });
-  return batchView(s, batchId);
+  return { ...batchView(s, batchId), result };
 }
 function collectDemoEvents(s: Store, deviceId: string, actor: string) {
   const relays = s.all(

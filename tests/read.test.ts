@@ -313,3 +313,53 @@ describe("Import da userlist CSV (sintetico)", () => {
     });
   });
 });
+describe("Applicazione dell'importazione", () => {
+  const csv =
+    "Name,Status,Times,Card Number,Password\n" +
+    "Anna Demo,Enable,0,0000000011,\n" +
+    "Bruno Demo,Enable,0,0000000012,7788\n" +
+    "Carla Demo,Enable,0,0000000013,\n";
+  const reader: DeviceReader = async (op) =>
+    op === "userlistRead"
+      ? { status: 200, body: csv }
+      : { status: 200, body: { code: "404", card: [], password: [] } };
+  it("nome già presente: errore che indica la voce, nessuna modifica parziale; poi associa o salta", async () => {
+    const s = new Store(":memory:");
+    const id = realDevice(s, "i60K");
+    s.run(
+      "INSERT INTO people VALUES('00000000-0000-4000-8000-000000000001','Anna Demo','',1,1,'2026-01-01')",
+    );
+    const batch = await stage(s, secrets, id, "actor", reader);
+    const anna = batch.items.find((i: any) => i.name === "Anna Demo");
+    expect(anna.candidates).toHaveLength(1);
+    expect(() => reconcile(s, batch.id, {}, "actor")).toThrow(
+      /«Anna Demo» ••••0011: nome già presente/,
+    );
+    expect(s.all("SELECT * FROM people")).toHaveLength(1);
+    const carla = batch.items.find((i: any) => i.name === "Carla Demo");
+    const done = reconcile(
+      s,
+      batch.id,
+      { [anna.id]: anna.candidates[0].id, [carla.id]: "skip" },
+      "actor",
+    );
+    expect(done.result).toEqual({ people: 1, credentials: 3, skipped: 1 });
+    expect(
+      s.all(
+        "SELECT * FROM credentials WHERE person_id=?",
+        anna.candidates[0].id,
+      ),
+    ).toHaveLength(1);
+    expect(
+      s.get("SELECT * FROM people WHERE name='Carla Demo'"),
+    ).toBeUndefined();
+    expect(reconcile(s, batch.id, {}, "actor").result.people).toBe(0);
+    // A later import proposes the skipped item again, the others as already reconciled.
+    const again = await stage(s, secrets, id, "actor", reader);
+    expect(
+      again.items
+        .filter((i: any) => !i.existingPersonId)
+        .map((i: any) => i.name),
+    ).toEqual(["Carla Demo"]);
+  });
+});
